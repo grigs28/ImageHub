@@ -287,7 +287,9 @@ curl -X POST http://<IP>:5569/v1/images/generations \
 
 `model: "auto"`：优先用当前已加载的模型；没有则回落到 `qwen`。
 
-**分辨率上限**（服务端校验，超限返回明确错误）：`qwen` 1024，`h3`/`zimage`/`moss` 2048（moss 2048 极慢，不建议）。
+**分辨率上限**（服务端校验，超限返回明确错误）：`h3`/`qwen`/`zimage`/`moss` 均为 2048（moss 2048 极慢 ~8 分钟，不建议）。
+
+> 说明：`qwen` 的 1536/2048 依赖 **VAE tiling**（服务已默认开启 `QIMAGE_VAE_TILING=1`），否则 VAE 解码会 OOM。实测 1024 约 10s、1536 约 26s、2048 约 52s（双卡 balanced）。
 
 Python（OpenAI SDK）：
 

@@ -148,7 +148,8 @@ _cond = threading.Condition()
 SERVICES = {
     "qwen": {
         "port": 5566, "cwd": "/opt/models/Qwen/Qwen-Image-2.1-Turbo",
-        "app": "qwenimage_server:app", "env": {"CUDA_VISIBLE_DEVICES": "2,3"},
+        "app": "qwenimage_server:app",
+        "env": {"CUDA_VISIBLE_DEVICES": "2,3", "QIMAGE_VAE_TILING": "1"},
         "needs": ["/opt/models/Qwen/Qwen-Image-2.1-Turbo/model_index.json"],
     },
     "zimage": {
@@ -202,7 +203,7 @@ MODELS = {
            "note": "sd.cpp GGUF UD-Q6，6步，中文文字最强",
            "gpus": "GPU2+GPU3 · DiT@2 编码器@3"},
     "qwen": {"name": "qwen", "svc": "qwen", "label": "Qwen-Image-2.1-Turbo",
-             "size": (1024, 1024), "max_size": 1024, "warm": (640, 640),
+             "size": (1024, 1024), "max_size": 2048, "warm": (640, 640),
              "note": "Elo1047，8步，中文排版强",
              "gpus": "GPU2+GPU3 · DiT@2 编码器@3"},
     "zimage": {"name": "zimage", "svc": "zimage", "label": "Z-Image-Turbo",

@@ -348,7 +348,7 @@ async function loadModels(){
     d.dataset.ready = m.ready ? "1" : "0";
     d.innerHTML = `<input type="checkbox" ${selected.has(m.key)?"checked":""}>
       <b>${m.label}</b>
-      <span class="note">${m.note} · 默认 ${m.default_size[0]}×${m.default_size[1]}</span>
+      <span class="note">${m.note} · 默认 ${m.default_size[0]}×${m.default_size[1]}${m.max_size ? ` · 最大 ${m.max_size}×${m.max_size}` : ""}</span>
       <span class="gpuTag">🖥 ${m.gpus || "GPU2+GPU3"}</span>
       ${m.ready === false ? '<span class="gpuTag" style="color:#f5c451;border-color:#5a4a1e;background:#2a2410">准备中（权重下载中）</span>' : ''}
       <span class="apiName" title="点击复制" onclick="event.stopPropagation();navigator.clipboard.writeText('${m.key}');this.textContent='✓ 已复制';setTimeout(()=>this.textContent='API model: ${m.key}',1200)">API model: ${m.key}</span>
