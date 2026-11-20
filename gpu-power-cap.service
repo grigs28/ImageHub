@@ -1,0 +1,11 @@
+[Unit]
+Description=GPU power limit (reduce PSU peak load)
+After=nvidia-persistenced.service multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/gpu-power-cap.sh
+
+[Install]
+WantedBy=multi-user.target

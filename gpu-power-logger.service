@@ -1,0 +1,12 @@
+[Unit]
+Description=GPU power/thermal logger (for crash forensics)
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gpu-power-logger.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

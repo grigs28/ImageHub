@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ImageHub · 文生图对比</title>
+<style>
+  :root{
+    --bg:#0b0d12; --panel:#141821; --panel2:#1b2130; --line:#252c3b;
+    --text:#e6e9ef; --muted:#8b93a7; --accent:#5b8cff; --ok:#2ecc71; --err:#ff5c5c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:14px/1.6 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  .logo{display:flex;align-items:center;justify-content:center;width:38px;height:38px;
+        border-radius:10px;background:#10151f;border:1px solid #232b3a;
+        box-shadow:0 0 18px rgba(122,162,255,.18)}
+  .logo svg{filter:drop-shadow(0 0 6px rgba(150,140,255,.45))}
+  header{padding:18px 24px;border-bottom:1px solid var(--line);display:flex;
+         align-items:baseline;gap:12px;flex-wrap:wrap}
+  h1{font-size:18px;margin:0;font-weight:600}
+  .sub{color:var(--muted);font-size:12px}
+  .nav{display:flex;gap:6px;padding:10px 24px;border-bottom:1px solid var(--line);
+       background:#0f131b;position:sticky;top:0;z-index:20;flex-wrap:wrap}
+  .nav a{color:var(--muted);text-decoration:none;font-size:13px;padding:6px 14px;
+         border-radius:8px;border:1px solid transparent}
+  .nav a:hover{color:var(--text);background:var(--panel2)}
+  .nav a.on{color:#cfe0ff;background:#1a2540;border-color:#2b3a5e}
+  .intro{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:10px}
+  .intro .item{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+  .intro .item b{display:block;font-size:13px;margin-bottom:3px}
+  .intro .item span{color:var(--muted);font-size:12px}
+  .codebox{background:#0d1119;border:1px solid var(--line);border-radius:8px;padding:12px;
+           font-family:ui-monospace,Consolas,monospace;font-size:12px;color:#9fe6b8;
+           overflow-x:auto;white-space:pre;position:relative}
+  .copybtn{position:absolute;right:10px;top:8px;font-size:11px;padding:3px 10px;
+           border-radius:6px;background:#1b2a44;color:#cfe0ff;border:1px solid #2b3a5e;cursor:pointer}
+  main{max-width:1500px;margin:0 auto;padding:20px 24px 60px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+         padding:16px;margin-bottom:16px}
+  .models{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px}
+  .card{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+        padding:12px;cursor:pointer;transition:.15s;position:relative}
+  .card:hover{border-color:#3a4a66}
+  .card.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+  .card input{position:absolute;right:12px;top:12px;accent-color:var(--accent)}
+  .card b{display:block;font-size:14px;margin-bottom:4px;padding-right:24px}
+  .card .note{color:var(--muted);font-size:12px;display:block;margin-bottom:8px}
+  .card .acts{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .mini{font-size:12px;padding:4px 10px;border-radius:6px;border:1px solid var(--line);
+        background:#202839;color:var(--text);cursor:pointer}
+  .mini:hover{border-color:var(--accent)}
+  .mini.link{text-decoration:none;display:inline-block}
+  .dot{width:8px;height:8px;border-radius:50%;background:#4a5468;display:inline-block;margin-right:5px}
+  .dot.live{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+  .dot.busy{background:#f5c451;box-shadow:0 0 6px #f5c451;animation:pulse 1s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .loadstate{font-size:12px;color:var(--muted)}
+  textarea{width:100%;min-height:96px;background:var(--panel2);color:var(--text);
+           border:1px solid var(--line);border-radius:8px;padding:10px;font:inherit;resize:vertical}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px}
+  label.small{color:var(--muted);font-size:12px;display:flex;flex-direction:column;gap:4px}
+  input[type=number]{width:110px;background:var(--panel2);color:var(--text);
+                     border:1px solid var(--line);border-radius:6px;padding:6px 8px}
+  button.primary{background:var(--accent);color:#fff;border:0;border-radius:8px;
+         padding:10px 22px;font:inherit;font-weight:600;cursor:pointer}
+  button.primary:disabled{opacity:.5;cursor:not-allowed}
+  #status{color:var(--muted);font-size:13px;margin-left:8px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+  .res{background:var(--panel2);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .res .hd{display:flex;justify-content:space-between;align-items:center;
+           padding:8px 12px;font-size:13px;border-bottom:1px solid var(--line)}
+  .res img{display:block;width:100%;height:auto;cursor:zoom-in}
+  .res .ft{padding:8px 12px;color:var(--muted);font-size:12px;display:flex;
+           justify-content:space-between}
+  .badge{font-size:11px;padding:2px 8px;border-radius:999px;background:#233}
+  .badge.run{background:#2b3a5e;color:#9fb6ff}
+  .badge.ok{background:#1e3d2c;color:#6fe3a2}
+  .badge.err{background:#4a2126;color:#ff9a9a}
+  .hist{display:flex;flex-direction:column;gap:8px;max-height:540px;overflow-y:auto;
+        padding-right:8px;scrollbar-width:thin;scrollbar-color:#3a4a66 transparent}
+  .hist::-webkit-scrollbar{width:8px}
+  .hist::-webkit-scrollbar-thumb{background:#3a4a66;border-radius:4px}
+  .hist::-webkit-scrollbar-track{background:transparent}
+  .histitem{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+            padding:10px 12px;display:block}
+  .histitem:hover{border-color:#3a4a66}
+  .histitem .row1{display:flex;justify-content:space-between;gap:10px;font-size:12px;
+                  color:var(--muted);padding-right:110px}
+  .histitem .pp{color:var(--text);font-size:13px;margin:4px 0 8px}
+  .thumbs{display:flex;gap:8px;flex-wrap:wrap}
+  .thumbs img{width:92px;height:92px;object-fit:cover;border-radius:6px;
+              border:1px solid var(--line);cursor:zoom-in}
+  .thumbs img:hover{border-color:var(--accent)}
+  .histitem .load{margin-left:auto;font-size:11px;color:#9fb6ff;cursor:pointer}
+  .histitem{position:relative}
+  .cb input{accent-color:var(--accent);cursor:pointer}
+  .copy{position:absolute;right:60px;top:8px;padding:2px 8px;border-radius:6px;
+        font-size:11px;line-height:1.6;color:#8b93a7;cursor:pointer;
+        border:1px solid var(--line);background:#202839}
+  .copy:hover{background:#1b2a44;color:#cfe0ff;border-color:#2b3a5e}
+  .del{position:absolute;right:8px;top:8px;padding:2px 8px;border-radius:6px;
+       font-size:11px;line-height:1.6;color:#8b93a7;cursor:pointer;
+       border:1px solid var(--line);background:#202839}
+  .del:hover{background:#4a2126;color:#ff9a9a;border-color:#7a2f36}
+  .ver{font-size:12px;color:#9fb6ff;background:#1a2540;border:1px solid #2b3a5e;
+        border-radius:999px;padding:3px 10px;margin-left:8px;font-weight:600}
+  .foot{max-width:1500px;margin:0 auto;padding:16px 24px 40px;color:#5f6878;
+        font-size:12px;text-align:center;border-top:1px solid var(--line)}
+  .userchip{font-size:12px;color:#cfe0ff;background:#1a2540;border:1px solid #2b3a5e;
+            border-radius:999px;padding:4px 12px;margin-left:12px}
+  .userchip a{color:#9fb6ff;text-decoration:none;margin-left:6px}
+  .gpubar{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .gpu{font-size:12px;color:var(--muted);background:var(--panel2);border:1px solid var(--line);
+       border-radius:8px;padding:4px 10px}
+  .gpu b{color:var(--text);font-weight:600}
+  .gpu .bar{display:inline-block;width:46px;height:6px;background:#2a3244;border-radius:3px;
+            margin-left:6px;vertical-align:middle;overflow:hidden}
+  .gpu .bar i{display:block;height:100%;background:linear-gradient(90deg,#3f7bff,#7aa2ff)}
+  .apiName{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:#9fe6b8;
+           background:#16281f;border:1px solid #24402f;border-radius:6px;padding:2px 8px;
+           margin-top:6px;display:inline-block;cursor:pointer}
+  .apiName:hover{border-color:#3f7bff}
+  .gpuTag{font-size:11px;color:#9fb6ff;background:#1d2740;border:1px solid #2b3a5e;
+          border-radius:999px;padding:2px 8px;margin-top:6px;display:inline-block}
+  h2{font-size:14px;margin:0 0 10px;color:var(--muted);font-weight:600;letter-spacing:.3px}
+
+  /* 灯箱 */
+  #lb{position:fixed;inset:0;background:rgba(4,6,10,.94);display:none;
+      z-index:99;overflow:hidden;cursor:grab}
+  #lb.show{display:block}
+  #lb.grabbing{cursor:grabbing}
+  #lb img{position:absolute;left:50%;top:50%;transform-origin:center;
+          max-width:none;user-select:none;-webkit-user-drag:none;will-change:transform}
+  #lb .bar{position:absolute;top:0;left:0;right:0;display:flex;gap:14px;align-items:center;
+           padding:12px 18px;color:#cfd6e6;font-size:13px;background:linear-gradient(rgba(0,0,0,.6),transparent)}
+  #lb .bar b{font-weight:600}
+  #lb .hint{margin-left:auto;color:#8b93a7;font-size:12px}
+  #lb .close{position:absolute;top:10px;right:16px;font-size:26px;color:#e6e9ef;
+             cursor:pointer;line-height:1;padding:6px 10px;border-radius:8px}
+  #lb .close:hover{background:rgba(255,255,255,.1)}
+</style>
+</head>
+<body>
+<header>
+  <span class="logo" aria-hidden="true">
+    <svg width="30" height="30" viewBox="0 0 32 32" fill="none">
+      <defs>
+        <linearGradient id="lg" x1="0" y1="0" x2="32" y2="32">
+          <stop offset="0" stop-color="#7aa2ff"/><stop offset=".5" stop-color="#b98bff"/>
+          <stop offset="1" stop-color="#ff8bd1"/>
+        </linearGradient>
+      </defs>
+      <rect x="2" y="2" width="28" height="28" rx="9" fill="url(#lg)" opacity=".18"/>
+      <path d="M16 5.5l2.6 7.2 7.4 3.3-7.4 3.3L16 26.5l-2.6-7.2L6 16l7.4-3.3L16 5.5z"
+            fill="url(#lg)"/>
+      <circle cx="25" cy="8" r="2.2" fill="#fff" opacity=".9"/>
+      <circle cx="7.5" cy="24.5" r="1.6" fill="#fff" opacity=".65"/>
+    </svg>
+  </span>
+  <h1>ImageHub · 文生图</h1>
+  <span class="sub">文生图 · 图片编辑 · 多模型对比 · 可按需加载的 API 服务</span>
+  <span class="ver" id="appVersion"></span>
+  <span class="gpubar" id="gpubar"></span>
+  <!--USER-->
+</header>
+<nav class="nav">
+  <a href="#overview">概览</a>
+  <a href="#compare">文生图对比</a>
+  <a href="#edit">图片编辑</a>
+  <a href="#resultPanel">对比结果</a>
+  <a href="#history">历史记录</a>
+  <a href="#power">GPU 功耗</a>
+  <a href="#api">API 调用</a>
+  <a href="http://192.168.0.70:5568" target="_blank" rel="noopener">ComfyUI ↗</a>
+</nav>
+<main>
+  <div class="panel" id="overview">
+    <h2>ImageHub · 文生图与图片编辑平台</h2>
+    <div class="sub" style="line-height:1.8">
+      一个页面 + 一套 API，统一调度 <b>5 个开源图像模型</b>：MiniMax H3-Image、Qwen-Image-2.1（原版 / 无限制）、
+      Z-Image-Turbo、MOSS-Image，外加 <b>Qwen-Image-Edit-2511</b> 做图片编辑。<br>
+      网页端用于人工对比与调参；程序端直接调 <code>POST /v1/images/generations</code>（OpenAI 兼容），
+      未加载的模型自动加载、加载后常驻复用，无需关心底层 ComfyUI 与显存调度。
+    </div>
+    <div class="intro">
+      <div class="item"><b>按需加载</b><span>请求哪个模型就自动加载哪个，首次约 +20~40 秒</span></div>
+      <div class="item"><b>常驻复用</b><span>加载后不卸载，同模型后续请求只花生成时间</span></div>
+      <div class="item"><b>同模型并行 / 跨模型排队</b><span>生成中的任务不会被打断，换模型等它跑完</span></div>
+      <div class="item"><b>OpenAI 兼容 API</b><span>POST /v1/images/generations，可直接用 OpenAI SDK 或任意 HTTP 客户端</span></div>
+      <div class="item"><b>网页 + API 双入口</b><span>网页做对比与编辑；API 给 Dify / 业务系统调用，二者共享同一套模型</span></div>
+    </div>
+  </div>
+
+
+
+  <div class="panel" id="compare">
+    <div style="display:flex;align-items:center;gap:10px">
+      <h2 style="margin:0">选择模型（可多选）· 可单独预热加载</h2>
+      <button class="mini" style="font-size:11px" onclick="selectAllModels(true)">全选</button>
+      <button class="mini" style="font-size:11px" onclick="selectAllModels(false)">全不选</button>
+    </div>
+    <div class="models" id="models"></div>
+
+    <div style="margin-top:16px">
+      <h2>提示词</h2>
+      <textarea id="prompt" placeholder="输入提示词，例如：赛博朋克城市夜景，霓虹灯招牌写着中文杭州"></textarea>
+      <div class="row">
+        <label class="small">宽（留空用默认）<input type="number" id="width" placeholder="默认"></label>
+        <label class="small">高（留空用默认）<input type="number" id="height" placeholder="默认"></label>
+        <label class="small">种子<input type="number" id="seed" value="42"></label>
+        <button class="primary" id="go">生成对比</button>
+        <span id="status"></span>
+      </div>
+    </div>
+  </div>
+
+
+  <div class="panel" id="edit">
+    <h2>图片编辑 · Qwen-Image-Edit-2511（上传图片 + 指令）</h2>
+    <div class="row" style="align-items:flex-start">
+      <label class="small">上传新图片
+        <input type="file" id="editFile" accept="image/*">
+      </label>
+      <div class="small" style="color:var(--muted);max-width:260px;font-size:12px">
+        或：在下方历史记录点击任意缩略图放大 → 点「✎ 编辑此图」载入
+      </div>
+      <img id="editPreview" style="display:none;max-height:180px;border-radius:8px;border:1px solid var(--line)">
+      <label class="small">步数<input type="number" id="editSteps" value="40"></label>
+      <label class="small">种子<input type="number" id="editSeed" value="42"></label>
+    </div>
+    <div style="margin-top:10px">
+      <textarea id="editPrompt" placeholder="描述要如何修改这张图，例如：把背景换成夜晚的赛博朋克街道，霓虹灯招牌写着杭州"></textarea>
+      <div class="row">
+        <button class="primary" id="editGo">开始编辑</button>
+        <span id="editStatus" class="sub"></span>
+        <span id="editReady" class="sub"></span>
+      </div>
+    </div>
+    <div id="editResult" style="margin-top:12px"></div>
+  </div>
+
+  <div class="panel" id="resultPanel">
+    <h2>对比结果（点击图片放大，滚轮缩放，拖动平移，双击复位）</h2>
+    <div class="grid" id="results"><div class="sub">尚未生成</div></div>
+  </div>
+
+  <div class="panel" id="historyPanel">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+      <h2 id="history" style="margin:0">历史记录</h2>
+      <label class="cb" style="font-size:12px;color:var(--muted);display:flex;gap:5px;align-items:center">
+        <input type="checkbox" id="selAll" onchange="toggleAll(this.checked)"> 全选
+      </label>
+      <button class="mini" onclick="deleteSelected()" style="font-size:11px">删除选中 <span id="selCount">0</span></button>
+      <button class="mini" onclick="clearHistory()" style="font-size:11px">清空全部</button>
+    </div>
+    <div class="hist" id="historyList"></div>
+  </div>
+  <div class="panel" id="api">
+    <h2>API 调用（OpenAI 兼容）</h2>
+    <div class="codebox" id="apicode">curl -X POST http://192.168.0.70:5569/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{"model":"h3","prompt":"赛博朋克城市夜景","size":"2048x2048","response_format":"url"}'
+
+# Python (OpenAI SDK)
+# client = OpenAI(base_url="http://192.168.0.70:5569/v1", api_key="none")
+# client.images.generate(model="qwen", prompt="水彩橘猫", size="1024x1024",
+#                        response_format="b64_json")<button class="copybtn" onclick="navigator.clipboard.writeText(document.getElementById('apicode').innerText.replace('复制',''));this.textContent='已复制';setTimeout(()=>this.textContent='复制',1200)">复制</button></div>
+    <div class="sub" style="margin-top:8px">
+      可用 model：<b>h3</b> / <b>qwen</b> / <b>zimage</b> / <b>moss</b>
+      · 参数：prompt、model、size、response_format（url|b64_json）、seed
+      · 详细说明见服务器 <code>/opt/vLLM/docs/ImageHub调用说明.md</code>
+    </div>
+  </div>
+  <div class="panel" id="power">
+    <h2>GPU 功耗控制</h2>
+    <div class="sub">调低可降低整机峰值（电源余量不足时保护）；恢复默认使用显卡出厂上限。修改立即生效，重启后回到开机默认值。</div>
+    <div id="powerRows" style="margin-top:10px;display:flex;flex-direction:column;gap:8px"></div>
+    <div class="row" style="margin-top:10px">
+      <label class="small">全部设为<input type="number" id="allPower" value="250" min="100" max="480"></label>
+      <button class="mini" onclick="applyPower('all', document.getElementById('allPower').value)">应用到全部</button>
+      <button class="mini" onclick="applyPower('all', null)">全部恢复默认</button>
+      <span id="powerStatus" class="sub"></span>
+    </div>
+  </div>
+</main>
+<footer class="foot">ImageHub <b id="appVersion2" style="color:#9fb6ff">-</b> · 引擎 ComfyUI 0.46 · 192.168.0.70:5569</footer>
+
+<div id="lb">
+  <div class="bar"><b id="lbTitle"></b><span id="lbInfo"></span>
+    <button class="mini" id="lbEdit" style="font-size:11px">✎ 编辑此图</button>
+    <span class="hint">滚轮缩放 · 拖动平移 · 双击复位 · Esc 关闭</span></div>
+  <span class="close" id="lbClose">×</span>
+  <img id="lbImg" alt="">
+</div>
+
+<script>
+const HOST = location.hostname;
+const COMFY_URL = `http://${HOST}:5568`;
+const LABEL = {};
+let selected = new Set();
+let selectedInit = false;
+let loadedModel = null;
+
+async function loadModels(){
+  const r = await fetch("/api/models");
+  const list = await r.json();
+  if(!selectedInit){ list.filter(m => m.ready !== false).forEach(m => selected.add(m.key)); selectedInit = true; }
+  const box = document.getElementById("models");
+  box.innerHTML = "";
+  list.forEach(m => {
+    LABEL[m.key] = m.label;
+    const d = document.createElement("div");
+    d.className = "card" + (selected.has(m.key) ? " on" : "");
+    d.dataset.key = m.key;
+    d.dataset.ready = m.ready ? "1" : "0";
+    d.innerHTML = `<input type="checkbox" ${selected.has(m.key)?"checked":""}>
+      <b>${m.label}</b>
+      <span class="note">${m.note} · 默认 ${m.default_size[0]}×${m.default_size[1]}</span>
+      <span class="gpuTag">🖥 ${m.gpus || "GPU2+GPU3"}</span>
+      ${m.ready === false ? '<span class="gpuTag" style="color:#f5c451;border-color:#5a4a1e;background:#2a2410">准备中（权重下载中）</span>' : ''}
+      <span class="apiName" title="点击复制" onclick="event.stopPropagation();navigator.clipboard.writeText('${m.key}');this.textContent='✓ 已复制';setTimeout(()=>this.textContent='API model: ${m.key}',1200)">API model: ${m.key}</span>
+      <div class="acts">
+        <button class="mini" data-act="warm">预热加载</button>
+        <a class="mini link" href="${COMFY_URL}" target="_blank" rel="noopener">打开 ComfyUI</a>
+        <span class="loadstate"><span class="dot"></span><span class="txt">未加载</span></span>
+      </div>`;
+    d.onclick = (e) => {
+      if(m.ready === false){
+        alert("该模型权重还在下载中，暂不可用");
+        const cb0 = d.querySelector("input");
+        cb0.checked = false;
+        selected.delete(m.key);
+        d.classList.remove("on");
+        return;
+      }
+      if(e.target.closest("button") || e.target.closest("a")) return;
+      const cb = d.querySelector("input");
+      if(e.target !== cb) cb.checked = !cb.checked;
+      if(cb.checked) selected.add(m.key); else selected.delete(m.key);
+      d.classList.toggle("on", cb.checked);
+    };
+    const btn = d.querySelector('[data-act="warm"]');
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      btn.disabled = true; btn.textContent = "加载中…";
+      await fetch("/api/launch", {method:"POST", headers:{"Content-Type":"application/json"},
+                                  body: JSON.stringify({model: m.key})});
+      refreshStatus();
+    };
+    box.appendChild(d);
+  });
+  refreshStatus();
+}
+
+async function refreshGpu(){
+  try{
+    const r = await fetch("/api/gpu");
+    const rows = await r.json();
+    document.getElementById("gpubar").innerHTML = rows.map(g=>{
+      const pct = Math.min(100, Math.round(g.used / g.total * 100));
+      const pw = (g.power_draw!==undefined) ? ` · ${g.power_draw}/${g.power_limit}W` : "";
+      const tp = (g.temp!==undefined) ? ` · ${g.temp}°C` : "";
+      return `<span class="gpu">GPU${g.index} <b>${(g.used/1024).toFixed(1)}</b>/${(g.total/1024).toFixed(0)}G${pw}${tp}
+        <span class="bar"><i style="width:${pct}%"></i></span></span>`;
+    }).join("");
+  }catch(e){}
+}
+
+let st = {loaded:null, active:0, switching:false, target:null};
+
+async function refreshStatus(){
+  try{
+    const r = await fetch("/api/status");
+    st = await r.json();
+    loadedModel = st.loaded;
+  }catch(e){}
+  document.querySelectorAll(".card").forEach(c=>{
+    const k = c.dataset.key;
+    const dot = c.querySelector(".dot");
+    const txt = c.querySelector(".loadstate .txt");
+    const btn = c.querySelector('[data-act="warm"]');
+    let live = false, busy = false, label = "未加载";
+    if(st.loaded === k){
+      live = true;
+      if(st.active > 0){ label = "生成中…"; busy = true; }
+      else label = "已加载";
+    } else if(st.switching && st.target === k){
+      busy = true; label = "加载中…";
+    }
+    dot.classList.toggle("live", live && !busy);
+    dot.classList.toggle("busy", busy);
+    txt.textContent = label;
+    if(btn){
+      if(busy && st.target === k){ btn.disabled = true; btn.textContent = "加载中…"; }
+      else if(live){ btn.disabled = false; btn.textContent = "重新加载"; }
+      else { btn.disabled = false; btn.textContent = "预热加载"; }
+    }
+  });
+}
+
+function badge(s){
+  if(s==="running") return '<span class="badge run">进行中</span>';
+  if(s==="ok") return '<span class="badge ok">完成</span>';
+  return '<span class="badge err">失败</span>';
+}
+
+function render(job){
+  const box = document.getElementById("results");
+  const models = job.models || [];
+  const results = job.results || [];
+  if(!results.length && job.status==="running"){
+    box.innerHTML = models.map(k=>`<div class="res"><div class="hd"><b>${LABEL[k]||k}</b>${badge("running")}</div>
+      <div style="padding:40px;text-align:center;color:#8b93a7">生成中…（加载+推理约 20~60 秒）</div></div>`).join("");
+    return;
+  }
+  const doneKeys = new Set(results.map(r=>r.model));
+  let html = results.map(r=>{
+    if(r.status==="ok" && r.image){
+      return `<div class="res"><div class="hd"><b>${LABEL[r.model]||r.model}</b>${badge("ok")}</div>
+        <img src="/image/${r.image}" alt="${LABEL[r.model]||r.model}"
+             onclick="openLightbox('/image/${r.image}', '${LABEL[r.model]||r.model}', '${r.duration}s · ${r.size||''}')">
+        <div class="ft"><span>${r.size||""}</span><span>${r.duration}s</span></div></div>`;
+    }
+    return `<div class="res"><div class="hd"><b>${LABEL[r.model]||r.model}</b>${badge("err")}</div>
+      <div style="padding:16px;color:#ff9a9a;font-size:12px">${(r.error||"失败").slice(0,300)}</div></div>`;
+  }).join("");
+  models.filter(k=>!doneKeys.has(k)).forEach(k=>{
+    html += `<div class="res"><div class="hd"><b>${LABEL[k]||k}</b>${badge("running")}</div>
+      <div style="padding:40px;text-align:center;color:#8b93a7">排队/生成中…</div></div>`;
+  });
+  box.innerHTML = html || '<div class="sub">尚未生成</div>';
+}
+
+async function poll(id){
+  while(true){
+    const r = await fetch(`/api/jobs/${id}`);
+    if(!r.ok) break;
+    const job = await r.json();
+    render(job);
+    if(job.status === "done"){ loadHistory(); refreshStatus(); break; }
+    await new Promise(res=>setTimeout(res,2500));
+  }
+}
+
+document.getElementById("go").onclick = async () => {
+  const btn = document.getElementById("go");
+  const prompt = document.getElementById("prompt").value.trim();
+  if(!prompt) return alert("请输入提示词");
+  if(!selected.size) return alert("请至少选择一个模型");
+  const width = document.getElementById("width").value;
+  const height = document.getElementById("height").value;
+  const seed = document.getElementById("seed").value;
+  btn.disabled = true;
+  document.getElementById("status").textContent = "已提交，正在依次执行…";
+  try{
+    const r = await fetch("/api/compare", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        prompt, models:[...selected],
+        width: width? parseInt(width): null,
+        height: height? parseInt(height): null,
+        seed: seed? parseInt(seed): 42
+      })
+    });
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.detail || "提交失败");
+    await poll(data.job_id);
+    document.getElementById("status").textContent = "完成";
+  }catch(e){
+    document.getElementById("status").textContent = "错误: " + e.message;
+  }finally{
+    btn.disabled = false;
+  }
+};
+
+async function loadHistory(){
+  const r = await fetch("/api/history?limit=20");
+  const rows = await r.json();
+  const box = document.getElementById("historyList");
+  if(!rows.length){ box.innerHTML = '<span class="sub">暂无记录</span>'; return; }
+  box.style.maxHeight = "";
+  HIST = {};
+  rows.forEach(h=>{ HIST[h.id] = h.prompt; });
+  box.innerHTML = rows.map(h=>{
+    const d = new Date(h.created*1000).toLocaleString();
+    const thumbs = (h.images||[]).map(im=>
+      `<img src="/image/${im.image}" title="${LABEL[im.model]||im.model} · ${im.duration||0}s"
+            onclick="event.stopPropagation();openLightbox('/image/${im.image}','${LABEL[im.model]||im.model}','${im.duration||0}s')">`
+    ).join("");
+    return `<div class="histitem" onclick="showJob('${h.id}')">
+      <div class="row1"><label class="cb" onclick="event.stopPropagation()">
+          <input type="checkbox" class="selbox" data-id="${h.id}"
+                 ${selIds.has(h.id)?"checked":""} onchange="toggleSel('${h.id}', this.checked)"></label>
+        <span>${d}</span><span>${h.models.join(", ")}</span>
+        <span class="load">${h.status==="interrupted"?'<span style="color:#f5c451">⚠ 中断</span> · ':""}载入到下方 ↗</span></div>
+      <span class="copy" title="复制提示词" onclick="event.stopPropagation();copyPrompt('${h.id}')">复制提示词</span>
+      <span class="del" title="删除这条记录" onclick="event.stopPropagation();delHistory('${h.id}')">删除</span>
+      <div class="pp">${h.prompt.slice(0,80)}</div>
+      <div class="thumbs">${thumbs || '<span class="sub">无图片</span>'}</div>
+    </div>`;
+  }).join("");
+  // 精确显示 5 条，其余滚动
+  const items = box.querySelectorAll(".histitem");
+  if(items.length > 3){
+    let hgt = 0;
+    for(let i=0;i<3;i++) hgt += items[i].offsetHeight;
+    hgt += 2 * 8;  // gap
+    box.style.maxHeight = hgt + "px";
+  }
+}
+
+let selIds = new Set();
+let HIST = {};
+
+async function copyPrompt(id){
+  const text = HIST[id] || "";
+  try{
+    await navigator.clipboard.writeText(text);
+  }catch(e){
+    const ta = document.createElement("textarea");
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    document.execCommand("copy"); ta.remove();
+  }
+  const tips = document.createElement("div");
+  tips.textContent = "提示词已复制";
+  tips.style.cssText = "position:fixed;left:50%;top:20px;transform:translateX(-50%);background:#1e3d2c;color:#6fe3a2;padding:8px 16px;border-radius:8px;z-index:999;font-size:13px";
+  document.body.appendChild(tips);
+  setTimeout(()=>tips.remove(), 1200);
+}
+
+function toggleSel(id, on){
+  if(on) selIds.add(id); else selIds.delete(id);
+  document.getElementById("selCount").textContent = selIds.size;
+}
+
+function toggleAll(on){
+  document.querySelectorAll(".selbox").forEach(cb=>{
+    cb.checked = on;
+    toggleSel(cb.dataset.id, on);
+  });
+}
+
+async function deleteSelected(){
+  if(!selIds.size) return alert("请先勾选要删除的记录");
+  if(!confirm(`确定删除选中的 ${selIds.size} 条记录？图片也会一并删除。`)) return;
+  const r = await fetch("/api/history/batch-delete", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ids: [...selIds]})
+  });
+  if(r.ok){
+    const d = await r.json();
+    selIds.clear();
+    document.getElementById("selCount").textContent = 0;
+    const all = document.getElementById("selAll"); if(all) all.checked = false;
+    alert(`已删除 ${d.deleted_jobs} 条记录、${d.deleted_images} 张图片`);
+    loadHistory();
+  }else{
+    alert("删除失败");
+  }
+}
+
+async function clearHistory(){
+  if(!confirm("确定清空全部历史记录？所有生成的图片也会删除，且不可恢复。")) return;
+  const r = await fetch("/api/history", {method:"DELETE"});
+  if(r.ok){
+    const d = await r.json();
+    alert(`已清空 ${d.deleted_jobs} 条记录，删除 ${d.deleted_images} 张图片`);
+    selIds.clear();
+    document.getElementById("selCount").textContent = 0;
+    loadHistory();
+  }else{
+    alert("清空失败");
+  }
+}
+
+async function delHistory(id){
+  if(!confirm("确定删除这条记录？生成的图片也会一并删除。")) return;
+  try{
+    const r = await fetch(`/api/history/${id}`, {method:"DELETE"});
+    if(!r.ok) throw new Error("删除失败");
+    await loadHistory();
+  }catch(e){ alert("删除失败: " + e.message); }
+}
+
+async function showJob(id){
+  const r = await fetch(`/api/jobs/${id}`);
+  if(r.ok) render(await r.json());
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+
+/* ============ 灯箱：滚轮缩放 / 拖动 / 双击复位 ============ */
+const lb = document.getElementById("lb");
+const lbImg = document.getElementById("lbImg");
+let scale = 1, tx = 0, ty = 0, dragging = false, sx = 0, sy = 0;
+
+function applyTransform(){
+  lbImg.style.transform =
+    `translate(-50%,-50%) translate(${tx}px,${ty}px) scale(${scale})`;
+}
+
+let lbCurrent = "";
+
+function openLightbox(src, title, info){
+  lbCurrent = src;
+  lbImg.src = src;
+  document.getElementById("lbTitle").textContent = title || "";
+  document.getElementById("lbInfo").textContent = info || "";
+  scale = 1; tx = 0; ty = 0; applyTransform();
+  lb.classList.add("show");
+  document.body.style.overflow = "hidden";
+}
+
+function closeLightbox(){
+  lb.classList.remove("show");
+  lbImg.src = "";
+  document.body.style.overflow = "";
+}
+
+document.getElementById("lbClose").onclick = closeLightbox;
+document.getElementById("lbEdit").onclick = () => { if(lbCurrent) useForEdit(lbCurrent); };
+lb.addEventListener("click", (e) => { if(e.target === lb) closeLightbox(); });
+document.addEventListener("keydown", (e) => { if(e.key === "Escape") closeLightbox(); });
+
+lb.addEventListener("wheel", (e) => {
+  if(!lb.classList.contains("show")) return;
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.12 : 1/1.12;
+  const newScale = Math.min(12, Math.max(0.15, scale * factor));
+  const rect = lb.getBoundingClientRect();
+  const cx = e.clientX - rect.left - rect.width/2;
+  const cy = e.clientY - rect.top - rect.height/2;
+  // 以光标为中心缩放
+  tx = cx - (cx - tx) * (newScale / scale);
+  ty = cy - (cy - ty) * (newScale / scale);
+  scale = newScale;
+  applyTransform();
+}, {passive:false});
+
+lb.addEventListener("mousedown", (e) => {
+  if(e.target !== lbImg) return;
+  dragging = true; sx = e.clientX - tx; sy = e.clientY - ty;
+  lb.classList.add("grabbing");
+});
+window.addEventListener("mousemove", (e) => {
+  if(!dragging) return;
+  tx = e.clientX - sx; ty = e.clientY - sy;
+  applyTransform();
+});
+window.addEventListener("mouseup", () => {
+  dragging = false; lb.classList.remove("grabbing");
+});
+lbImg.addEventListener("dblclick", () => {
+  scale = 1; tx = 0; ty = 0; applyTransform();
+});
+
+
+/* ============ 编辑来源：历史图片或本地上传 ============ */
+async function useForEdit(src){
+  try{
+    const r = await fetch(src);
+    const blob = await r.blob();
+    const rd = new FileReader();
+    rd.onload = () => {
+      editB64 = rd.result;
+      const img = document.getElementById("editPreview");
+      img.src = rd.result; img.style.display = "block";
+      closeLightbox();
+      document.getElementById("edit").scrollIntoView({behavior:"smooth"});
+      document.getElementById("editPrompt").focus();
+      document.getElementById("editStatus").textContent = "已载入图片，请输入编辑指令";
+    };
+    rd.readAsDataURL(blob);
+  }catch(e){
+    alert("载入图片失败: " + e.message);
+  }
+}
+
+/* ============ 图片编辑 ============ */
+let editB64 = null;
+document.getElementById("editFile").onchange = (e) => {
+  const f = e.target.files[0];
+  if(!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    editB64 = r.result;
+    const img = document.getElementById("editPreview");
+    img.src = r.result; img.style.display = "block";
+  };
+  r.readAsDataURL(f);
+};
+
+document.getElementById("editGo").onclick = async () => {
+  const btn = document.getElementById("editGo");
+  const status = document.getElementById("editStatus");
+  const prompt = document.getElementById("editPrompt").value.trim();
+  if(!editB64) return alert("请先选择图片");
+  if(!prompt) return alert("请输入编辑指令");
+  btn.disabled = true;
+  status.textContent = "提交中…（首次加载模型约 30~60 秒）";
+  document.getElementById("editResult").innerHTML = "";
+  try{
+    const r = await fetch("/api/edit", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({prompt, image_b64: editB64,
+        seed: parseInt(document.getElementById("editSeed").value) || 42,
+        steps: parseInt(document.getElementById("editSteps").value) || 40})
+    });
+    const d = await r.json();
+    if(d.status === "ok" && d.image){
+      status.textContent = `完成 · ${d.duration}s`;
+      document.getElementById("editResult").innerHTML =
+        `<div class="res" style="max-width:640px">
+           <div class="hd"><b>Qwen-Image-Edit-2511</b><span class="badge ok">完成</span></div>
+           <img src="/image/${d.image}" onclick="openLightbox('/image/${d.image}', 'Qwen-Image-Edit-2511', '${d.duration}s')">
+           <div class="ft"><span>编辑结果</span><span>${d.duration}s</span></div>
+         </div>`;
+    }else{
+      status.textContent = "失败: " + (d.error || "未知错误");
+    }
+  }catch(e){
+    status.textContent = "错误: " + e.message;
+  }finally{
+    btn.disabled = false;
+  }
+};
+
+
+/* ============ 模型全选/全不选 ============ */
+function selectAllModels(on){
+  document.querySelectorAll(".card").forEach(c=>{
+    if(c.dataset.ready !== "1") return;
+    const k = c.dataset.key;
+    const cb = c.querySelector("input");
+    cb.checked = on;
+    if(on) selected.add(k); else selected.delete(k);
+    c.classList.toggle("on", on);
+  });
+}
+
+/* ============ GPU 功耗控制 ============ */
+async function loadPower(){
+  try{
+    const r = await fetch("/api/power");
+    const rows = await r.json();
+    document.getElementById("powerRows").innerHTML = rows.map(g=>`
+      <div class="row" style="margin:0;align-items:center">
+        <span style="min-width:64px"><b>GPU${g.index}</b></span>
+        <span class="sub" style="min-width:150px">当前 ${g.limit}W · 默认 ${g.default}W</span>
+        <input type="number" id="pw${g.index}" value="${g.limit}" min="${g.min}" max="${g.max}" style="width:90px">
+        <button class="mini" onclick="applyPower('${g.index}', document.getElementById('pw${g.index}').value)">应用</button>
+        <button class="mini" onclick="applyPower('${g.index}', null)">恢复默认</button>
+        <span class="sub">范围 ${g.min}~${g.max}W</span>
+      </div>`).join("");
+  }catch(e){}
+}
+
+async function applyPower(gpu, limit){
+  const st = document.getElementById("powerStatus");
+  st.textContent = "设置中…";
+  try{
+    const body = {gpu: String(gpu), limit: (limit === null || limit === "" ) ? null : parseInt(limit)};
+    const r = await fetch("/api/power", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.detail || "失败");
+    st.textContent = "已生效";
+    loadPower();
+fetch("/api/edit/model").then(r=>r.json()).then(d=>{
+  const el = document.getElementById("editReady");
+  if(el) el.textContent = d.ready ? "" : "⚠ 编辑模型权重下载中，暂不可用";
+  if(!d.ready){ const b=document.getElementById("editGo"); if(b){ b.disabled = true; } }
+}).catch(()=>{}); refreshGpu();
+  }catch(e){
+    st.textContent = "失败: " + e.message;
+  }
+}
+
+fetch("/api/version").then(r=>r.json()).then(d=>{
+  document.getElementById("appVersion").textContent = "v" + d.version;
+  const f = document.getElementById("appVersion2");
+  if(f) f.textContent = "v" + d.version + " (" + d.build + ")";
+}).catch(()=>{});
+
+loadModels();
+loadHistory();
+loadPower();
+fetch("/api/edit/model").then(r=>r.json()).then(d=>{
+  const el = document.getElementById("editReady");
+  if(el) el.textContent = d.ready ? "" : "⚠ 编辑模型权重下载中，暂不可用";
+  if(!d.ready){ const b=document.getElementById("editGo"); if(b){ b.disabled = true; } }
+}).catch(()=>{});
+setInterval(refreshStatus, 2000);
+refreshGpu();
+setInterval(refreshGpu, 5000);
+</script>
+</body>
+</html>

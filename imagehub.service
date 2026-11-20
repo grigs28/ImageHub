@@ -1,0 +1,17 @@
+[Unit]
+Description=ImageHub - Unified text-to-image web (4 models via ComfyUI)
+After=network-online.target comfyui-h3.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/vLLM/imagehub
+Environment="PATH=/opt/conda3/envs/imagegen/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="CONDA_PREFIX=/opt/conda3/envs/imagegen"
+ExecStart=/opt/conda3/envs/imagegen/bin/python /opt/vLLM/imagehub/0_imagehub.py
+Restart=always
+RestartSec=5
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
