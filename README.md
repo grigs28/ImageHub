@@ -5,6 +5,34 @@
 
 ![version](https://img.shields.io/badge/version-1.4.0-blue)
 
+## 1.5.0 主要更新（设计版）
+
+- **页面拆分**：工作台 / 图库 / API / 管理（仅管理员），刷新保持当前页
+- **权限体系**：yz-login 用户同步到本地库，`is_admin` 以本地为准，可提权/降权；接口按管理员保护
+- **API Key**：可选（Bearer 或请求体 `apikey`），UI 可见可复制，只保留必要数量
+- **ControlNet（设计类）**：Qwen-Image-2.1 Fun ControlNet Union
+  - `POST /v1/design/render`（控制图 + 类型 + 强度，支持蒙版做局部重绘）
+  - `POST /v1/design/clay2render`（白模 → 效果图）
+  - `POST /v1/design/sketch2render`（线稿/SU 截图 → 效果图）
+  - `POST /v1/design/batch`（同提示词多 seed，n ≤ 4）
+  - `GET /v1/jobs/{id}`（任务查询）
+- **多工作流注册表**：同一模型可按功能选不同工作流（qwen: t2i / controlnet）
+- **项目与审计**：项目选择器、项目内任务查询、管理页审计日志
+- **稳定性**：ComfyUI 串行锁加超时（600s），避免请求永久排队
+
+### ControlNet 模型准备
+
+```bash
+# 模型放入 ComfyUI 的 model_patches（不是 controlnet 目录）
+mkdir -p /opt/ComfyUI/models/model_patches
+ln -sf /opt/models/Comfy-Org/Qwen-Image-2.1/model_patches/qwen_image_2.1_fun_controlnet_union_int8_convrot.safetensors \
+       /opt/ComfyUI/models/model_patches/
+systemctl restart comfyui-h3
+```
+
+> int8 convrot 版（3.5G）在 RTX 3090 上实测可用；bf16 版（7G）显存更紧张。
+> ControlNet 目前仅支持 ComfyUI 后端；直连 diffusers 适配在路线图 P3。
+
 ## 1.4.0 主要更新
 
 - **双后端可切换**：`直连 diffusers`（每模型一个独立 FastAPI 服务，`services/` 目录）与 `ComfyUI`，可在页面底部切换并保存到 `settings.json`

@@ -66,6 +66,9 @@
          padding:10px 22px;font:inherit;font-weight:600;cursor:pointer}
   button.primary:disabled{opacity:.5;cursor:not-allowed}
   #status{color:var(--muted);font-size:13px;margin-left:8px}
+  .page{display:none}
+  .page.active{display:block}
+  .nav a.on{background:var(--accent);color:#0b0e14}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,320px));gap:14px;justify-content:start}
   .res{background:var(--panel2);border:1px solid var(--line);border-radius:10px;overflow:hidden}
   .res .hd{display:flex;justify-content:space-between;align-items:center;
@@ -166,19 +169,22 @@
   <span class="sub">文生图 · 图片编辑 · 多模型对比 · 可按需加载的 API 服务</span>
   <span class="ver" id="appVersion"></span>
   <span class="gpubar" id="gpubar"></span>
+  <span class="sub" style="display:inline-flex;gap:6px;align-items:center">
+    项目 <select id="projectSel" style="background:#12151d;color:#e6e9ef;border:1px solid #2a3040;border-radius:6px;padding:3px 6px">
+      <option value="">未分组</option></select>
+    <button class="mini" onclick="newProject()">+ 项目</button>
+  </span>
   <!--USER-->
 </header>
 <nav class="nav">
-  <a href="#overview">概览</a>
-  <a href="#compare">文生图对比</a>
-  <a href="#edit">图片编辑</a>
-  <a href="#resultPanel">对比结果</a>
-  <a href="#history">历史记录</a>
-  <a href="#power">GPU 功耗</a>
-  <a href="#api">API 调用</a>
-  <a href="http://192.168.0.70:5568" target="_blank" rel="noopener">ComfyUI ↗</a>
+  <a href="#" data-page="work" class="on">工作台</a>
+  <a href="#" data-page="library">图库</a>
+  <a href="#" data-page="api">API 调用</a>
+  <a href="#" data-page="admin" id="navAdmin" style="display:none">管理</a>
+  <a href="http://192.168.0.70:5568" target="_blank" rel="noopener" class="comfyLink">ComfyUI ↗</a>
 </nav>
 <main>
+<div class="page" data-page="work">
   <div class="panel" id="overview">
     <h2>ImageHub · 文生图与图片编辑平台</h2>
     <div class="sub" style="line-height:1.8">
@@ -245,11 +251,28 @@
     <div id="editResult" style="margin-top:12px"></div>
   </div>
 
+  <div class="panel" id="designTool">
+    <h2>线稿 / 白模 → 效果图（ControlNet）</h2>
+    <div class="sub">上传线稿、SU 截图、白模渲染图或深度图，按上方提示词和控制强度生成。走 ComfyUI + Qwen-Image-2.1 Fun ControlNet。</div>
+    <div class="row" style="margin-top:10px;gap:12px;flex-wrap:wrap;align-items:center">
+      <label class="small">控制图<input type="file" id="ctrlFile" accept="image/*"></label>
+      <label class="small">控制类型<select id="ctrlType">
+        <option value="canny">canny 线稿（自动边缘）</option>
+        <option value="lineart">lineart 线稿</option>
+        <option value="depth">depth 深度图（需上传深度图）</option>
+        <option value="raw">raw 原图直用</option></select></label>
+      <label class="small">控制强度<input type="number" id="ctrlStrength" value="0.8" min="0" max="1" step="0.05" style="width:70px"></label>
+      <button class="mini" id="designBtn" onclick="runDesign()">生成效果图</button>
+      <span id="designStatus" class="sub"></span>
+    </div>
+  </div>
   <div class="panel" id="resultPanel">
     <h2>对比结果（点击图片放大，滚轮缩放，拖动平移，双击复位）</h2>
     <div class="grid" id="results"><div class="sub">尚未生成</div></div>
   </div>
 
+</div>
+<div class="page" data-page="library">
   <div class="panel" id="historyPanel">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
       <h2 id="history" style="margin:0">历史记录</h2>
@@ -261,11 +284,13 @@
     </div>
     <div class="hist" id="historyList"></div>
   </div>
+</div>
+<div class="page" data-page="api">
   <div class="panel" id="api">
     <h2>API 调用（OpenAI 兼容）</h2>
     <div class="codebox" id="apicode">curl -X POST http://192.168.0.70:5569/v1/images/generations \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen","prompt":"赛博朋克城市夜景","size":"1024x1024","seed":42,"backend":"direct","response_format":"url"}'
+  -d '{"model":"qwen","prompt":"赛博朋克城市夜景","size":"1024x1024","seed":42,"backend":"direct","apikey":"","response_format":"url"}'
 
 # Python (OpenAI SDK)
 # client = OpenAI(base_url="http://192.168.0.70:5569/v1", api_key="none")
@@ -277,6 +302,8 @@
       · 详细说明见服务器 <code>/opt/vLLM/docs/ImageHub调用说明.md</code>
     </div>
   </div>
+</div>
+<div class="page" data-page="admin">
   <div class="panel" id="power">
     <h2>GPU 功耗控制</h2>
     <div class="sub">调低可降低整机峰值（电源余量不足时保护）；恢复默认使用显卡出厂上限。修改立即生效，重启后回到开机默认值。</div>
@@ -303,6 +330,29 @@
       <button class="mini" onclick="saveSettings()">保存设置</button>
       <span id="setStatus" class="sub"></span>
     </div>
+
+  </div>
+  <div class="panel" id="adminUsers">
+    <h2>用户权限</h2>
+    <div class="sub">权限以本地为准：yz-login 首次登录写入，管理员可在此提权/降权。</div>
+    <div id="userRows" style="margin-top:10px;display:flex;flex-direction:column;gap:6px"></div>
+    <div class="row" style="margin-top:8px"><button class="mini" onclick="loadUsers()">刷新</button><span id="userStatus" class="sub"></span></div>
+  </div>
+  <div class="panel" id="adminKeys">
+    <h2>API Key</h2>
+    <div class="sub">调用 API 时可选：不填则按匿名用户处理（无配额）；填写后可按 Key 审计与限流。</div>
+    <div class="row" style="margin-top:10px;gap:10px;flex-wrap:wrap;align-items:center">
+      <label class="small">名称<input id="keyName" placeholder="可空" style="width:140px"></label>
+      <label class="small">角色<select id="keyRole"><option value="user">user</option><option value="admin">admin</option></select></label>
+      <button class="mini" onclick="createKey()">生成 Key</button>
+      <span id="keyStatus" class="sub"></span>
+    </div>
+    <div id="keyRows" style="margin-top:10px;display:flex;flex-direction:column;gap:6px"></div>
+  </div>
+  <div class="panel" id="adminAudit">
+    <h2>审计日志</h2>
+    <div class="sub">配置变更与 Key 操作记录</div>
+    <div id="auditRows" style="margin-top:10px;font-size:12px;display:flex;flex-direction:column;gap:4px"></div>
   </div>
   <div class="panel" id="stress36">
     <h2>3.6 对话压测</h2>
@@ -315,6 +365,7 @@
       <span id="s36status" class="sub">未运行</span>
     </div>
   </div>
+</div>
 </main>
 <footer class="foot">ImageHub <b id="appVersion2" style="color:#9fb6ff">-</b> · 引擎 直连 diffusers · 192.168.0.70:5569</footer>
 
@@ -723,6 +774,95 @@ function applyBackendUI(backend){
   document.querySelectorAll(".comfyLink").forEach(a=>{ a.style.display = (b === "comfy") ? "" : "none"; });
 }
 
+let CUR_PROJECT = "";
+async function loadProjects(){
+  try{
+    const rows = await (await fetch("/api/projects")).json();
+    const sel = document.getElementById("projectSel");
+    const saved = localStorage.getItem("imagehub.project") || "";
+    sel.innerHTML = '<option value="">未分组</option>' +
+      rows.map(p=>`<option value="${p.id}">${p.name}</option>`).join("");
+    sel.value = saved;
+    CUR_PROJECT = sel.value;
+    sel.onchange = ()=>{ CUR_PROJECT = sel.value; try{ localStorage.setItem("imagehub.project", sel.value); }catch(e){} };
+  }catch(e){}
+}
+async function newProject(){
+  const name = prompt("项目名称：");
+  if(!name) return;
+  const r = await fetch("/api/projects", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({name})});
+  const d = await r.json();
+  if(r.ok){ try{ localStorage.setItem("imagehub.project", d.id); }catch(e){} ; loadProjects(); }
+  else alert("创建失败: " + JSON.stringify(d).slice(0,120));
+}
+
+async function loadAudit(){
+  try{
+    const rows = await (await fetch("/api/admin/audit?limit=30")).json();
+    const box = document.getElementById("auditRows");
+    if(!Array.isArray(rows)){ box.innerHTML = '<span class="sub">无权限</span>'; return; }
+    box.innerHTML = rows.map(a=>`<div class="row" style="justify-content:space-between;border-bottom:1px dashed #2a3040;padding:3px 0">
+      <span>${new Date(a.created*1000).toLocaleString()} · <b>${a.actor||"-"}</b> · ${a.action}</span>
+      <span class="sub" style="max-width:50%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(a.detail||"").slice(0,120)}</span></div>`).join("")
+      || '<span class="sub">暂无记录</span>';
+  }catch(e){}
+}
+
+async function loadUsers(){
+  try{
+    const r = await fetch("/api/admin/users");
+    const rows = await r.json();
+    const box = document.getElementById("userRows");
+    if(!r.ok){ box.innerHTML = '<span class="sub">无权限或未登录</span>'; return; }
+    box.innerHTML = rows.map(u=>`<div class="row" style="justify-content:space-between;border-bottom:1px dashed #2a3040;padding:4px 0">
+      <span>${u.display_name||u.username||u.id} <span class="sub">(${u.username||u.id})</span></span>
+      <span><b style="color:${u.is_admin?'#7ee0a1':'#8b93a7'}">${u.is_admin?'管理员':'普通用户'}</b>
+      <button class="mini" onclick="setAdmin('${u.id}', ${u.is_admin?0:1})">${u.is_admin?'降权':'提权'}</button></span></div>`).join("")
+      || '<span class="sub">暂无用户（有人登录后自动出现）</span>';
+  }catch(e){}
+}
+async function setAdmin(uid, flag){
+  const r = await fetch(`/api/admin/users/${uid}`, {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({is_admin: !!flag})});
+  document.getElementById("userStatus").textContent = r.ok ? "已更新" : "失败: " + (await r.text()).slice(0,80);
+  loadUsers();
+}
+async function loadKeys(){
+  try{
+    const r = await fetch("/api/admin/keys");
+    const rows = await r.json();
+    const box = document.getElementById("keyRows");
+    if(!r.ok){ box.innerHTML = '<span class="sub">无权限</span>'; return; }
+    box.innerHTML = rows.map(k=>`<div class="row" style="justify-content:space-between;border-bottom:1px dashed #2a3040;padding:6px 0;gap:10px;flex-wrap:wrap">
+      <span>#${k.id} <b>${k.name}</b> <span class="sub">${k.role}</span></span>
+      <span style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <code style="font-size:11px;background:#12151d;padding:2px 6px;border-radius:4px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${k.key||'(旧 Key 不可显示)'}</code>
+        ${k.key?`<button class="mini" onclick="copyText('${k.key}',this)">复制</button>`:''}
+        <span class="sub">${k.last_used? '最近使用 '+new Date(k.last_used*1000).toLocaleString() : '未使用'}</span>
+        <button class="mini" onclick="delKey(${k.id})">删除</button></span></div>`).join("")
+      || '<span class="sub">暂无 Key</span>';
+  }catch(e){}
+}
+async function createKey(){
+  const name = document.getElementById("keyName").value.trim();
+  const role = document.getElementById("keyRole").value;
+  const r = await fetch("/api/admin/keys", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({name, role})});
+  const d = await r.json();
+  document.getElementById("keyStatus").textContent = r.ok ? ("已生成（只显示一次）：" + d.key) : ("失败: " + JSON.stringify(d).slice(0,120));
+  if(r.ok){ try{ await navigator.clipboard.writeText(d.key); document.getElementById("keyStatus").textContent += " 已复制"; }catch(e){} }
+  loadKeys();
+}
+async function copyText(t, btn){
+  try{ await navigator.clipboard.writeText(t); btn.textContent="✓ 已复制"; setTimeout(()=>btn.textContent="复制",1200); }
+  catch(e){ prompt("复制失败，请手动复制：", t); }
+}
+async function delKey(id){
+  await fetch(`/api/admin/keys/${id}`, {method:"DELETE"});
+  loadKeys();
+}
+
 async function loadSettings(){
   try{
     const r = await fetch("/api/settings");
@@ -936,10 +1076,74 @@ fetch("/api/version").then(r=>r.json()).then(d=>{
   if(f) f.textContent = "v" + d.version + " (" + d.build + ")";
 }).catch(()=>{});
 
+async function runDesign(){
+  const f = document.getElementById("ctrlFile").files[0];
+  const st = document.getElementById("designStatus");
+  if(!f){ st.textContent = "请先选择控制图"; return; }
+  const prompt = document.getElementById("prompt").value.trim();
+  if(!prompt){ st.textContent = "请先在上方输入提示词"; return; }
+  const wv = document.getElementById("width").value;
+  const hv = document.getElementById("height").value;
+  const w = wv ? parseInt(wv) : 1024, h = hv ? parseInt(hv) : 1024;
+  const seedEl = document.getElementById("seed").value;
+  const btn = document.getElementById("designBtn");
+  btn.disabled = true; st.textContent = "读取图片…";
+  const b64 = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result).split(",")[1]); r.onerror=rej; r.readAsDataURL(f); });
+  st.textContent = "生成中（ControlNet 首次约 60 秒）…";
+  try{
+    const r = await fetch("/v1/design/render", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({prompt, control_image: b64,
+        control_type: document.getElementById("ctrlType").value,
+        control_strength: parseFloat(document.getElementById("ctrlStrength").value)||0.8,
+        size: `${w}x${h}`, seed: seedEl?parseInt(seedEl):42,
+        model: "qwen", backend: CURRENT_BACKEND, project: CUR_PROJECT})});
+    const d = await r.json();
+    if(!r.ok){ st.textContent = "失败: " + JSON.stringify(d).slice(0,200); return; }
+    st.textContent = `完成 ${d.duration_s}s`;
+    const image = (d.url||"").split("/").pop();
+    render({models:["qwen"], status:"done",
+            results:[{model:"qwen", status:"ok", image, seed:d.seed||null,
+                      duration:d.duration_s, size:d.size}]});
+    document.getElementById("resultPanel").scrollIntoView({behavior:"smooth"});
+    loadHistory();
+  }catch(e){ st.textContent = "失败: " + e; }
+  finally{ btn.disabled = false; }
+}
+
+function switchPage(name){
+  if(name==="admin"){
+    const n = document.getElementById("navAdmin");
+    if(!n || n.style.display === "none") name = "work";
+  }
+  try{ localStorage.setItem("imagehub.page", name); }catch(e){}
+  document.querySelectorAll(".page").forEach(p=>p.classList.toggle("active", p.dataset.page===name));
+  document.querySelectorAll(".nav a[data-page]").forEach(a=>a.classList.toggle("on", a.dataset.page===name));
+  window.scrollTo({top:0});
+}
+document.querySelectorAll(".nav a[data-page]").forEach(a=>{
+  a.onclick = (e)=>{ e.preventDefault(); switchPage(a.dataset.page); };
+});
+(async()=>{
+  try{
+    const d = await (await fetch("/api/whoami")).json();
+    if(d.user && d.user.is_admin){
+      const n = document.getElementById("navAdmin");
+      if(n) n.style.display = "";
+    }
+  }catch(e){}
+  let saved = "work";
+  try{ saved = localStorage.getItem("imagehub.page") || "work"; }catch(e){}
+  switchPage(saved);
+})();
+
 loadModels();
 loadHistory();
 loadSettings();
 refreshStress36();
+loadProjects();
+loadAudit();
+loadUsers();
+loadKeys();
 // 定时刷新历史（其他客户端/API 生成的图也能自动出现）
 setInterval(loadHistory, 20000);
 setInterval(refreshStatus, 5000);

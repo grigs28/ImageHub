@@ -232,8 +232,35 @@ def db():
     conn.execute("""CREATE TABLE IF NOT EXISTS jobs(
         id TEXT PRIMARY KEY, prompt TEXT, models TEXT, created REAL,
         results TEXT)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS users(
+        id TEXT PRIMARY KEY, username TEXT, display_name TEXT,
+        is_admin INTEGER DEFAULT 0, source TEXT DEFAULT 'yz',
+        synced_at REAL, updated_at REAL)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS api_keys(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, key_hash TEXT UNIQUE,
+        role TEXT DEFAULT 'user', enabled INTEGER DEFAULT 1,
+        created REAL, last_used REAL, quota_json TEXT)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS audit(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT, action TEXT,
+        detail TEXT, created REAL)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS projects(
+        id TEXT PRIMARY KEY, name TEXT, owner TEXT, created REAL)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS assets(
+        id TEXT PRIMARY KEY, project_id TEXT, kind TEXT, path TEXT,
+        meta TEXT, created REAL)""")
+    conn.execute("PRAGMA journal_mode=WAL")
     try:
         conn.execute("ALTER TABLE jobs ADD COLUMN status TEXT DEFAULT 'done'")
+        conn.commit()
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE api_keys ADD COLUMN key_plain TEXT")
+        conn.commit()
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN project TEXT")
         conn.commit()
     except Exception:
         pass
@@ -647,7 +674,39 @@ def wf_qwen_edit(prompt, image_name, w, h, seed, steps=40, cfg=4.0):
 
 
 
+def wf_qwen_cn(control_name, control_type, strength, prompt, w, h, seed, mask_name=None):
+    """Qwen-Image-2.1 + Fun ControlNet Union（控制图已在 ComfyUI input 目录）"""
+    wf = wf_qwen(prompt, w, h, seed)
+    if control_type in ("canny", "lineart"):
+        wf["20"] = {"class_type": "LoadImage", "inputs": {"image": control_name}}
+        wf["21"] = {"class_type": "Canny",
+                    "inputs": {"image": ["20", 0], "low_threshold": 0.4, "high_threshold": 0.8}}
+        ctrl_src = ["21", 0]
+    else:  # depth / normal / raw：用户上传的就是控制图
+        wf["20"] = {"class_type": "LoadImage", "inputs": {"image": control_name}}
+        ctrl_src = ["20", 0]
+    wf["22"] = {"class_type": "ModelPatchLoader",
+                "inputs": {"name": "qwen_image_2.1_fun_controlnet_union_int8_convrot.safetensors"}}
+    wf["23"] = {"class_type": "QwenImageDiffsynthControlnet",
+                "inputs": {"model": ["2", 0], "model_patch": ["22", 0], "vae": ["4", 0],
+                           "image": ctrl_src, "strength": float(strength)}}
+    if mask_name:
+        wf["30"] = {"class_type": "LoadImageMask",
+                    "inputs": {"image": mask_name, "channel": "red"}}
+        wf["23"]["inputs"]["mask"] = ["30", 0]
+    wf["10"]["inputs"]["model"] = ["23", 0]
+    wf["13"]["inputs"]["filename_prefix"] = "hub_cn"
+    return wf
+
+
+# 工作流注册表：同一模型可按功能选用不同工作流
 WF_BUILDERS = {"h3": wf_h3, "qwen": wf_qwen, "zimage": wf_zimage, "moss": wf_moss}
+MODEL_WORKFLOWS = {
+    "qwen": {"t2i": wf_qwen, "controlnet": wf_qwen_cn},
+    "h3": {"t2i": wf_h3},
+    "zimage": {"t2i": wf_zimage},
+    "moss": {"t2i": wf_moss},
+}
 
 
 def _sdcpp_generate(port, prompt, w, h, seed, timeout=1800):
@@ -789,14 +848,115 @@ def run_model(model_key, prompt, width, height, seed, backend=None):
         release_model()
 
 
-def record_job(prompt, model_keys, results, status="done"):
+def _admin_seed():
+    raw = os.environ.get("IMAGEHUB_ADMINS", "grigs")
+    return {x.strip() for x in raw.split(",") if x.strip()}
+
+
+def _hash_key(k):
+    import hashlib
+    return hashlib.sha256(k.encode()).hexdigest()
+
+
+def _key_valid(raw):
+    """校验请求体中的 apikey；返回 (ok, info)"""
+    if not raw:
+        return True, {"name": "anonymous", "role": "user", "is_admin": False}
+    h = _hash_key(raw.strip())
+    try:
+        conn = db()
+        row = conn.execute("SELECT name, role, enabled FROM api_keys WHERE key_hash=?",
+                           (h,)).fetchone()
+        if row and row[2]:
+            conn.execute("UPDATE api_keys SET last_used=? WHERE key_hash=?", (time.time(), h))
+            conn.commit()
+        conn.close()
+    except Exception:
+        return False, None
+    if not row or not row[2]:
+        return False, None
+    return True, {"name": row[0], "role": row[1], "is_admin": row[1] == "admin"}
+
+
+def _api_key_user(request):
+    """Bearer key → {name, role, is_admin}"""
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return None
+    h = _hash_key(auth[7:].strip())
+    try:
+        conn = db()
+        row = conn.execute("SELECT name, role, enabled FROM api_keys WHERE key_hash=?",
+                           (h,)).fetchone()
+        if row and row[2]:
+            conn.execute("UPDATE api_keys SET last_used=? WHERE key_hash=?", (time.time(), h))
+            conn.commit()
+        conn.close()
+    except Exception:
+        return None
+    if not row:
+        return None
+    return {"name": row[0], "role": row[1], "is_admin": row[1] == "admin"}
+
+
+def _is_admin(request):
+    tok = os.environ.get("IMAGEHUB_ADMIN_TOKEN", "")
+    if tok and request.headers.get("x-admin-token") == tok:
+        return True
+    u = _api_key_user(request)
+    if u and u.get("is_admin"):
+        return True
+    sess = request.session.get("user") or {}
+    return bool(sess.get("is_admin"))
+
+
+def _require_admin(request):
+    if not _is_admin(request):
+        raise HTTPException(403, "需要管理员权限")
+
+
+def _audit(actor, action, detail=""):
+    try:
+        conn = db()
+        conn.execute("INSERT INTO audit(actor,action,detail,created) VALUES(?,?,?,?)",
+                     (actor, action, json.dumps(detail, ensure_ascii=False)[:2000], time.time()))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def _upsert_user(u):
+    """登录时同步 yz-login 用户；is_admin 以本地为准（新用户按种子/票据初始化）"""
+    uid = str(u.get("id") or u.get("username") or "")
+    if not uid:
+        return 0
+    now = time.time()
+    conn = db()
+    row = conn.execute("SELECT is_admin FROM users WHERE id=?", (uid,)).fetchone()
+    if row is None:
+        seed_admin = 1 if (u.get("username") in _admin_seed() or u.get("is_admin")) else 0
+        conn.execute("INSERT INTO users VALUES(?,?,?,?,?,?,?)",
+                     (uid, u.get("username"), u.get("display_name"), seed_admin, "yz", now, now))
+        is_admin = seed_admin
+    else:
+        conn.execute("UPDATE users SET username=?, display_name=?, synced_at=? WHERE id=?",
+                     (u.get("username"), u.get("display_name"), now, uid))
+        is_admin = row[0]
+    conn.commit()
+    conn.close()
+    return is_admin
+
+
+def record_job(prompt, model_keys, results, status="done", project=None):
     """把单次生成写入历史（供 /v1 与 /api/edit 使用）"""
     jid = uuid.uuid4().hex[:12]
     try:
         conn = db()
-        conn.execute("INSERT OR REPLACE INTO jobs VALUES (?,?,?,?,?,?)",
+        conn.execute("INSERT OR REPLACE INTO jobs(id,prompt,models,created,results,status,project) "
+                     "VALUES (?,?,?,?,?,?,?)",
                      (jid, prompt, json.dumps(model_keys), time.time(),
-                      json.dumps(results), status))
+                      json.dumps(results), status, project))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -858,7 +1018,8 @@ def api_power():
 
 
 @app.post("/api/power")
-def api_set_power(req: PowerReq):
+def api_set_power(req: PowerReq, request: Request):
+    _require_admin(request)
     info = {r["index"]: r for r in _power_info()}
     targets = list(info.keys()) if str(req.gpu) == "all" else [int(req.gpu)]
     changed = []
@@ -893,6 +1054,7 @@ class OAIImageRequest(BaseModel):
     model: Optional[str] = "qwen"
     backend: Optional[str] = None  # 生成后端：comfyui | direct；留空用全局设置（默认 comfyui）
     com: Optional[str] = None      # 兼容旧参数（等同 backend），后续可移除
+    apikey: Optional[str] = None   # 可选：调用密钥，留空匿名调用
     only_loaded: bool = False   # true=只用当前已加载模型，不触发切换
     n: int = 1
     size: str = "1024x1024"
@@ -905,12 +1067,17 @@ def v1_models():
     return {"object": "list",
             "data": [{"id": k, "object": "model", "owned_by": "imagehub",
                       "label": v["label"], "default_size": list(v["size"]),
-                      "max_size": v.get("max_size")}
+                      "max_size": v.get("max_size"),
+                      "capabilities": (["t2i", "edit"] if k == "edit" else
+                                       (["t2i", "controlnet"] if k == "qwen" else ["t2i"]))}
                      for k, v in MODELS.items() if not v.get("hidden")]}
 
 
 @app.post("/v1/images/generations")
 def v1_generate(req: OAIImageRequest):
+    ok, keyinfo = _key_valid(getattr(req, "apikey", None))
+    if not ok:
+        raise HTTPException(401, "apikey 无效或已禁用")
     raw_key = (req.model or "auto").strip()
     lowered = raw_key.lower()
     # model=auto/loaded/current：直接使用当前已加载模型
@@ -1205,7 +1372,8 @@ class Stress36Req(BaseModel):
 
 
 @app.post("/api/stress36/start")
-def api_stress36_start(req: Stress36Req):
+def api_stress36_start(req: Stress36Req, request: Request):
+    _require_admin(request)
     global _s36
     if _s36["running"]:
         raise HTTPException(409, "压测正在进行中")
@@ -1221,7 +1389,8 @@ def api_stress36_start(req: Stress36Req):
 
 
 @app.post("/api/stress36/stop")
-def api_stress36_stop():
+def api_stress36_stop(request: Request):
+    _require_admin(request)
     _s36_stop.set()
     with _lock:
         _s36["running"] = False
@@ -1233,6 +1402,188 @@ def api_stress36_status():
     d = dict(_s36)
     d["elapsed"] = round(time.time() - d["start"], 0) if d["start"] else 0
     return d
+
+
+class DesignRenderReq(BaseModel):
+    prompt: str
+    control_image: Optional[str] = None    # base64 控制图（线稿/深度/白模截图）
+    control_type: str = "canny"            # canny | lineart | depth | normal | raw
+    control_strength: float = 0.8
+    mask_image: Optional[str] = None       # base64 蒙版（局部重绘）
+    size: str = "1024x1024"
+    seed: Optional[int] = 42
+    model: str = "qwen"
+    apikey: Optional[str] = None
+    backend: Optional[str] = None
+    project: Optional[str] = None
+
+
+def _save_b64(b64, prefix):
+    os.makedirs(COMFY_INPUT, exist_ok=True)
+    raw = (b64 or "").split(",")[-1]
+    try:
+        data = base64.b64decode(raw)
+    except Exception:
+        raise HTTPException(400, "图片 base64 解析失败")
+    name = f"{prefix}_{uuid.uuid4().hex[:8]}.png"
+    with open(os.path.join(COMFY_INPUT, name), "wb") as f:
+        f.write(data)
+    return name
+
+
+def _design_generate(prompt, control_b64, control_type, strength, w, h, seed,
+                     mask_b64=None, model="qwen"):
+    """ControlNet 结构化生成（ComfyUI），返回 (image, duration)"""
+    if control_type not in ("canny", "lineart", "depth", "normal", "raw"):
+        raise HTTPException(400, "control_type 仅支持 canny/lineart/depth/normal/raw")
+    cap = MODELS.get(model, {}).get("max_size", 2048)
+    if max(w, h) > cap:
+        raise HTTPException(400, f"{model} 最大支持 {cap}×{cap}（当前 {w}×{h}）")
+    name = _save_b64(control_b64, "design")
+    mask_name = _save_b64(mask_b64, "mask") if mask_b64 else None
+    if not _comfy_lock.acquire(timeout=600):
+        raise HTTPException(503, "图像服务繁忙（队列已满），请稍后重试")
+    try:
+        if not ensure_comfy():
+            raise HTTPException(503, "ComfyUI 未就绪（ControlNet 目前依赖 ComfyUI 后端）")
+        comfy_free()
+        wf = wf_qwen_cn(name, control_type, strength, prompt, w, h,
+                        seed if seed is not None else 42, mask_name)
+        ok, imgs, err, dur = _submit_wait(wf, timeout=1800)
+    finally:
+        _comfy_lock.release()
+    if not ok:
+        raise HTTPException(500, err)
+    return (imgs[0] if imgs else None), dur
+
+
+def _design_response(prompt, image, dur, w, h, seed, control_type, strength, workflow,
+                     model="qwen", project=None):
+    jid = record_job(prompt, [model],
+                     [{"model": model, "status": "ok", "image": image,
+                       "duration": dur, "size": f"{w}x{h}", "seed": seed,
+                       "workflow": workflow, "control_type": control_type}],
+                     project=project)
+    return {"created": int(time.time()), "job_id": jid, "image": image,
+            "url": f"/image/{image}", "duration_s": dur, "size": f"{w}x{h}",
+            "seed": seed, "control_type": control_type,
+            "control_strength": strength, "workflow": workflow}
+
+
+@app.post("/v1/design/render")
+def api_design_render(req: DesignRenderReq):
+    """结构化生成：控制图 + 提示词（ComfyUI + Qwen-Image-2.1 Fun ControlNet）"""
+    ok, _ = _key_valid(req.apikey)
+    if not ok:
+        raise HTTPException(401, "apikey 无效或已禁用")
+    if not req.control_image:
+        raise HTTPException(400, "需要 control_image（base64）")
+    w, h = _parse_size(req.size)
+    image, dur = _design_generate(req.prompt, req.control_image, req.control_type,
+                                  req.control_strength, w, h, req.seed, req.mask_image)
+    return _design_response(req.prompt, image, dur, w, h, req.seed,
+                            req.control_type, req.control_strength,
+                            "inpaint" if req.mask_image else "controlnet",
+                            project=req.project)
+
+
+class ClayReq(BaseModel):
+    image: str                              # 白模截图（base64）
+    materials: str = "清水混凝土、超白玻璃、深灰金属"
+    lighting: str = "黄昏暖光，柔和阴影"
+    style: str = "写实建筑摄影"
+    prompt: Optional[str] = None
+    size: str = "1024x1024"
+    seed: Optional[int] = 42
+    strength: float = 0.9
+    apikey: Optional[str] = None
+
+
+@app.post("/v1/design/clay2render")
+def api_clay2render(req: ClayReq):
+    """白模 → 效果图（预设提示词模板，raw 控制）"""
+    ok, _ = _key_valid(req.apikey)
+    if not ok:
+        raise HTTPException(401, "apikey 无效或已禁用")
+    prompt = req.prompt or (
+        f"以输入的白模渲染图为结构参考，生成{req.style}。"
+        f"材质：{req.materials}；光照：{req.lighting}。"
+        "严格保持原有建筑体量、开窗位置、透视与构图不变，只替换材质与环境。")
+    w, h = _parse_size(req.size)
+    image, dur = _design_generate(prompt, req.image, "raw", req.strength, w, h, req.seed)
+    return _design_response(prompt, image, dur, w, h, req.seed, "raw", req.strength, "clay2render")
+
+
+class SketchReq(BaseModel):
+    sketch: str                             # 线稿/SU 截图（base64）
+    style: str = "写实建筑效果图"
+    prompt: Optional[str] = None
+    size: str = "1024x1024"
+    seed: Optional[int] = 42
+    strength: float = 0.8
+    apikey: Optional[str] = None
+
+
+@app.post("/v1/design/sketch2render")
+def api_sketch2render(req: SketchReq):
+    """线稿 / SU 截图 → 效果图（lineart 控制）"""
+    ok, _ = _key_valid(req.apikey)
+    if not ok:
+        raise HTTPException(401, "apikey 无效或已禁用")
+    prompt = req.prompt or (
+        f"以输入线稿为结构参考，生成{req.style}。"
+        "保持建筑轮廓、体块关系与构图不变，补充合理的材质、光影与环境。")
+    w, h = _parse_size(req.size)
+    image, dur = _design_generate(prompt, req.sketch, "lineart", req.strength, w, h, req.seed)
+    return _design_response(prompt, image, dur, w, h, req.seed, "lineart", req.strength, "sketch2render")
+
+
+class BatchReq(BaseModel):
+    prompt: str
+    n: int = 4
+    seed_start: int = 42
+    size: str = "1024x1024"
+    control_image: Optional[str] = None
+    control_type: str = "canny"
+    control_strength: float = 0.8
+    apikey: Optional[str] = None
+
+
+@app.post("/v1/design/batch")
+def api_design_batch(req: BatchReq):
+    """批量方案：同一提示词多 seed 出图（n ≤ 4）"""
+    ok, _ = _key_valid(req.apikey)
+    if not ok:
+        raise HTTPException(401, "apikey 无效或已禁用")
+    n = max(1, min(int(req.n), 4))
+    w, h = _parse_size(req.size)
+    out = []
+    t0 = time.time()
+    for i in range(n):
+        seed = req.seed_start + i
+        if req.control_image:
+            image, dur = _design_generate(req.prompt, req.control_image, req.control_type,
+                                          req.control_strength, w, h, seed)
+            workflow, ctype, strength = "batch-controlnet", req.control_type, req.control_strength
+        else:
+            res = run_model("qwen", req.prompt, w, h, seed, backend="comfy")
+            image, dur = res.get("image"), res.get("duration")
+            workflow, ctype, strength = "batch-t2i", None, None
+        out.append(_design_response(req.prompt, image, dur, w, h, seed, ctype, strength, workflow))
+    return {"created": int(time.time()), "count": len(out),
+            "jobs": out, "total_s": round(time.time() - t0, 1)}
+
+
+def _parse_size(size):
+    try:
+        return [int(x) for x in size.lower().split("x")]
+    except Exception:
+        raise HTTPException(400, "size 格式应为 1024x1024")
+
+
+@app.get("/v1/jobs/{jid}")
+def v1_job(jid: str):
+    return api_job(jid)
 
 
 class SettingsReq(BaseModel):
@@ -1249,7 +1600,8 @@ def api_get_settings():
 
 
 @app.post("/api/settings")
-def api_set_settings(req: SettingsReq):
+def api_set_settings(req: SettingsReq, request: Request):
+    _require_admin(request)
     if req.backend in ("direct", "comfy"):
         if req.backend != _settings.get("backend"):
             with _cond:
@@ -1327,6 +1679,137 @@ def _adopt_running_services():
 @app.on_event("startup")
 def _on_startup_preload():
     threading.Thread(target=_preload_default, daemon=True).start()
+
+
+# ==================== 管理后台 ====================
+class UserAdminReq(BaseModel):
+    is_admin: bool
+
+
+class KeyReq(BaseModel):
+    name: str = ""
+    role: str = "user"      # user | admin
+
+
+@app.get("/api/admin/users")
+def admin_users(request: Request):
+    _require_admin(request)
+    conn = db()
+    rows = conn.execute("SELECT id,username,display_name,is_admin,source,synced_at "
+                        "FROM users ORDER BY is_admin DESC, username").fetchall()
+    conn.close()
+    return [{"id": r[0], "username": r[1], "display_name": r[2],
+             "is_admin": bool(r[3]), "source": r[4], "synced_at": r[5]} for r in rows]
+
+
+@app.post("/api/admin/users/{uid}")
+def admin_set_user(uid: str, req: UserAdminReq, request: Request):
+    _require_admin(request)
+    conn = db()
+    cur = conn.execute("UPDATE users SET is_admin=?, updated_at=? WHERE id=?",
+                       (1 if req.is_admin else 0, time.time(), uid))
+    conn.commit()
+    ok = cur.rowcount > 0
+    conn.close()
+    if not ok:
+        raise HTTPException(404, "用户不存在（需先登录过一次）")
+    _audit((request.session.get("user") or {}).get("username", "admin"),
+           "user.set_admin", {"uid": uid, "is_admin": req.is_admin})
+    return {"ok": True}
+
+
+@app.get("/api/admin/keys")
+def admin_keys(request: Request):
+    _require_admin(request)
+    conn = db()
+    rows = conn.execute("SELECT id,name,role,enabled,created,last_used,key_plain "
+                        "FROM api_keys ORDER BY id DESC").fetchall()
+    conn.close()
+    return [{"id": r[0], "name": r[1], "role": r[2], "enabled": bool(r[3]),
+             "created": r[4], "last_used": r[5], "key": r[6]} for r in rows]
+
+
+@app.post("/api/admin/keys")
+def admin_create_key(req: KeyReq, request: Request):
+    _require_admin(request)
+    if req.role not in ("user", "admin"):
+        raise HTTPException(400, "role 只能是 user 或 admin")
+    name = (req.name or "").strip() or f"key-{time.strftime('%m%d-%H%M%S')}"
+    raw = "ih-" + uuid.uuid4().hex + uuid.uuid4().hex[:8]
+    conn = db()
+    conn.execute("INSERT INTO api_keys(name,key_hash,role,enabled,created,key_plain) "
+                 "VALUES(?,?,?,1,?,?)",
+                 (name, _hash_key(raw), req.role, time.time(), raw))
+    conn.commit()
+    conn.close()
+    _audit((request.session.get("user") or {}).get("username", "admin"),
+           "key.create", {"name": name, "role": req.role})
+    return {"ok": True, "key": raw, "note": "只显示一次，请立即保存"}
+
+
+@app.delete("/api/admin/keys/{kid}")
+def admin_delete_key(kid: int, request: Request):
+    _require_admin(request)
+    conn = db()
+    conn.execute("DELETE FROM api_keys WHERE id=?", (kid,))
+    conn.commit()
+    conn.close()
+    _audit((request.session.get("user") or {}).get("username", "admin"), "key.delete", {"id": kid})
+    return {"ok": True}
+
+
+@app.get("/api/admin/audit")
+def admin_audit(request: Request, limit: int = 100):
+    _require_admin(request)
+    conn = db()
+    rows = conn.execute("SELECT id,actor,action,detail,created FROM audit "
+                        "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    return [{"id": r[0], "actor": r[1], "action": r[2], "detail": r[3], "created": r[4]}
+            for r in rows]
+
+
+# ==================== 项目 / 素材 ====================
+class ProjectReq(BaseModel):
+    name: str
+
+
+@app.get("/api/projects")
+def api_projects():
+    conn = db()
+    rows = conn.execute("SELECT id,name,owner,created FROM projects ORDER BY created DESC").fetchall()
+    conn.close()
+    return [{"id": r[0], "name": r[1], "owner": r[2], "created": r[3]} for r in rows]
+
+
+@app.post("/api/projects")
+def api_create_project(req: ProjectReq):
+    name = (req.name or "").strip()
+    if not name:
+        raise HTTPException(400, "项目名不能为空")
+    pid = uuid.uuid4().hex[:8]
+    conn = db()
+    conn.execute("INSERT INTO projects VALUES(?,?,?,?)", (pid, name, "", time.time()))
+    conn.commit()
+    conn.close()
+    return {"ok": True, "id": pid, "name": name}
+
+
+@app.get("/api/projects/{pid}/assets")
+def api_project_assets(pid: str):
+    conn = db()
+    rows = conn.execute("SELECT id,prompt,results,created FROM jobs WHERE project=? ORDER BY created DESC LIMIT 100",
+                        (pid,)).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        try:
+            res = json.loads(r[2] or "[]")
+        except Exception:
+            res = []
+        out.append({"job": r[0], "prompt": r[1], "created": r[3],
+                    "images": [x.get("image") for x in res if x.get("image")]})
+    return out
 
 
 @app.get("/api/version")
@@ -1502,6 +1985,8 @@ def _do_login(request: Request):
     user = _verify_ticket(request.query_params.get("ticket", ""))
     if not user:
         return HTMLResponse("<h3>登录验证失败，请重试</h3><a href='/'>返回</a>", status_code=403)
+    is_admin = _upsert_user(user)
+    user["is_admin"] = bool(is_admin)
     request.session["user"] = user
     return RedirectResponse("/")
 
