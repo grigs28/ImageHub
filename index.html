@@ -940,6 +940,9 @@ loadModels();
 loadHistory();
 loadSettings();
 refreshStress36();
+// 定时刷新历史（其他客户端/API 生成的图也能自动出现）
+setInterval(loadHistory, 20000);
+setInterval(refreshStatus, 5000);
 loadPower();
 fetch("/api/edit/model").then(r=>r.json()).then(d=>{
   const el = document.getElementById("editReady");
