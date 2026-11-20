@@ -1277,6 +1277,58 @@ def _clocks_locked():
         return False
 
 
+def _preload_default():
+    """启动后自动加载默认模型（qwen）；等 3.6 就绪且空闲后再加载，避免并发分配显存"""
+    if os.environ.get("IMAGEHUB_PRELOAD", "qwen").strip() in ("", "0", "off"):
+        return
+    target = os.environ.get("IMAGEHUB_PRELOAD", "qwen").strip() or "qwen"
+    time.sleep(10)
+    try:
+        t0 = time.time()
+        while time.time() - t0 < 300:
+            ready = False
+            try:
+                with urllib.request.urlopen("http://127.0.0.1:5563/v1/models", timeout=3) as r:
+                    ready = r.status == 200
+            except Exception:
+                ready = False
+            if ready and _vllm_running() <= 0:
+                break
+            time.sleep(5)
+        if target not in MODELS:
+            return
+        if _settings.get("backend") == "direct":
+            acquire_model(target)
+            release_model()
+        else:
+            # ComfyUI 后端：跑一次小尺寸预热
+            ww, wh = MODELS[target].get("warm", (640, 640))
+            run_model(target, "warmup", ww, wh, 42)
+        logger.info(f"启动预加载完成: {target}")
+    except Exception as e:
+        logger.warning(f"启动预加载失败: {e}")
+
+
+@app.on_event("startup")
+def _adopt_running_services():
+    """接管重启前已在运行的直连服务，避免状态丢失"""
+    for k in SERVICES:
+        try:
+            if svc_alive(k):
+                with _cond:
+                    _state["loaded"] = k
+                _save_state(k)
+                logger.info(f"接管已在运行的服务: {k}")
+                break
+        except Exception:
+            pass
+
+
+@app.on_event("startup")
+def _on_startup_preload():
+    threading.Thread(target=_preload_default, daemon=True).start()
+
+
 @app.get("/api/version")
 def api_version():
     return {"name": "ImageHub", "version": APP_VERSION, "build": APP_BUILD}
@@ -1286,10 +1338,20 @@ def api_version():
 def api_status():
     backend = _settings.get("backend", "comfy")
     with _cond:
-        loaded = _state["comfy_loaded"] if backend == "comfy" else _state["loaded"]
+        direct = _state["loaded"]
+        comfy = _state["comfy_loaded"]
+        if direct and svc_alive(direct):
+            loaded = direct          # 直连服务确实在跑，优先如实报告
+            backend_now = "direct"
+        elif comfy:
+            loaded = comfy
+            backend_now = "comfy"
+        else:
+            loaded = None
+            backend_now = backend
         return {"loaded": loaded, "active": _state["active"],
                 "switching": _state["switching"], "target": _state["target"],
-                "backend": backend, "version": APP_VERSION}
+                "backend": backend_now, "version": APP_VERSION}
 
 
 @app.get("/api/history")
