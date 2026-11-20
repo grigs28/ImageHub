@@ -66,11 +66,12 @@
          padding:10px 22px;font:inherit;font-weight:600;cursor:pointer}
   button.primary:disabled{opacity:.5;cursor:not-allowed}
   #status{color:var(--muted);font-size:13px;margin-left:8px}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,320px));gap:14px;justify-content:start}
   .res{background:var(--panel2);border:1px solid var(--line);border-radius:10px;overflow:hidden}
   .res .hd{display:flex;justify-content:space-between;align-items:center;
            padding:8px 12px;font-size:13px;border-bottom:1px solid var(--line)}
-  .res img{display:block;width:100%;height:auto;cursor:zoom-in}
+  .res img{display:block;width:100%;aspect-ratio:1/1;object-fit:cover;cursor:zoom-in}
+  /* 缩略图统一定高，点击仍需看大图时进灯箱 */
   .res .ft{padding:8px 12px;color:var(--muted);font-size:12px;display:flex;
            justify-content:space-between}
   .badge{font-size:11px;padding:2px 8px;border-radius:999px;background:#233}
@@ -92,6 +93,8 @@
   .thumbs img{width:92px;height:92px;object-fit:cover;border-radius:6px;
               border:1px solid var(--line);cursor:zoom-in}
   .thumbs img:hover{border-color:var(--accent)}
+  .hthumb{display:flex;flex-direction:column;align-items:center;gap:3px}
+  .hmeta{font-size:10px;color:var(--muted);white-space:nowrap}
   .histitem .load{margin-left:auto;font-size:11px;color:#9fb6ff;cursor:pointer}
   .histitem{position:relative}
   .cb input{accent-color:var(--accent);cursor:pointer}
@@ -129,6 +132,7 @@
   #lb{position:fixed;inset:0;background:rgba(4,6,10,.94);display:none;
       z-index:99;overflow:hidden;cursor:grab}
   #lb.show{display:block}
+  body[data-backend="direct"] .comfyLink{display:none}
   #lb.grabbing{cursor:grabbing}
   #lb img{position:absolute;left:50%;top:50%;transform-origin:center;
           max-width:none;user-select:none;-webkit-user-drag:none;will-change:transform}
@@ -199,6 +203,7 @@
       <h2 style="margin:0">选择模型（可多选）· 可单独预热加载</h2>
       <button class="mini" style="font-size:11px" onclick="selectAllModels(true)">全选</button>
       <button class="mini" style="font-size:11px" onclick="selectAllModels(false)">全不选</button>
+      <span id="backendChip" class="gpuTag" title="当前生成后端，可在页面底部切换">后端：—</span>
     </div>
     <div class="models" id="models"></div>
 
@@ -206,8 +211,8 @@
       <h2>提示词</h2>
       <textarea id="prompt" placeholder="输入提示词，例如：赛博朋克城市夜景，霓虹灯招牌写着中文杭州"></textarea>
       <div class="row">
-        <label class="small">宽（留空用默认）<input type="number" id="width" placeholder="默认"></label>
-        <label class="small">高（留空用默认）<input type="number" id="height" placeholder="默认"></label>
+        <label class="small">宽（留空用默认，最大 2048）<input type="number" id="width" min="512" max="2048" step="64" placeholder="默认"></label>
+        <label class="small">高（留空用默认，最大 2048）<input type="number" id="height" min="512" max="2048" step="64" placeholder="默认"></label>
         <label class="small">种子<input type="number" id="seed" value="42"></label>
         <button class="primary" id="go">生成对比</button>
         <span id="status"></span>
@@ -260,15 +265,15 @@
     <h2>API 调用（OpenAI 兼容）</h2>
     <div class="codebox" id="apicode">curl -X POST http://192.168.0.70:5569/v1/images/generations \
   -H "Content-Type: application/json" \
-  -d '{"model":"h3","prompt":"赛博朋克城市夜景","size":"2048x2048","response_format":"url"}'
+  -d '{"model":"qwen","prompt":"赛博朋克城市夜景","size":"1024x1024","seed":42,"backend":"direct","response_format":"url"}'
 
 # Python (OpenAI SDK)
 # client = OpenAI(base_url="http://192.168.0.70:5569/v1", api_key="none")
 # client.images.generate(model="qwen", prompt="水彩橘猫", size="1024x1024",
 #                        response_format="b64_json")<button class="copybtn" onclick="navigator.clipboard.writeText(document.getElementById('apicode').innerText.replace('复制',''));this.textContent='已复制';setTimeout(()=>this.textContent='复制',1200)">复制</button></div>
     <div class="sub" style="margin-top:8px">
-      可用 model：<b>h3</b> / <b>qwen</b> / <b>zimage</b> / <b>moss</b>
-      · 参数：prompt、model、size、response_format（url|b64_json）、seed
+      可用 model：<b>qwen</b> / <b>zimage</b> / <b>moss</b>（图片编辑走 /api/edit）
+      · 参数：prompt、model、size、response_format（url|b64_json）、seed、backend（comfyui|direct，留空用全局设置）
       · 详细说明见服务器 <code>/opt/vLLM/docs/ImageHub调用说明.md</code>
     </div>
   </div>
@@ -283,8 +288,35 @@
       <span id="powerStatus" class="sub"></span>
     </div>
   </div>
+  <div class="panel" id="settings">
+    <h2>运行设置</h2>
+    <div class="sub">保存到服务器 settings.json，重启后仍然生效。</div>
+    <div class="row" style="margin-top:10px;gap:16px;flex-wrap:wrap;align-items:center">
+      <label class="small">后端：
+        <select id="setBackend" style="background:#12151d;color:#e6e9ef;border:1px solid #2a3040;border-radius:6px;padding:4px 8px">
+          <option value="direct">直连 diffusers（推荐）</option>
+          <option value="comfy">ComfyUI</option>
+        </select>
+      </label>
+      <label class="small"><input type="checkbox" id="setGate"> 门控（切换模型前等 3.6 空闲）</label>
+      <label class="small"><input type="checkbox" id="setClocks"> 锁频（GPU 锁定 1410MHz）</label>
+      <button class="mini" onclick="saveSettings()">保存设置</button>
+      <span id="setStatus" class="sub"></span>
+    </div>
+  </div>
+  <div class="panel" id="stress36">
+    <h2>3.6 对话压测</h2>
+    <div class="sub">对 5563 持续发送对话请求，观察吞吐与稳定性（不影响出图）。</div>
+    <div class="row" style="margin-top:10px;gap:14px;flex-wrap:wrap;align-items:center">
+      <label class="small">并发<input type="number" id="s36conc" value="4" min="1" max="32" style="width:64px"></label>
+      <label class="small">时长(秒)<input type="number" id="s36dur" value="300" min="0" style="width:80px"></label>
+      <button class="mini" id="s36start" onclick="startStress36()">开始压测</button>
+      <button class="mini" id="s36stop" onclick="stopStress36()">停止</button>
+      <span id="s36status" class="sub">未运行</span>
+    </div>
+  </div>
 </main>
-<footer class="foot">ImageHub <b id="appVersion2" style="color:#9fb6ff">-</b> · 引擎 ComfyUI 0.46 · 192.168.0.70:5569</footer>
+<footer class="foot">ImageHub <b id="appVersion2" style="color:#9fb6ff">-</b> · 引擎 直连 diffusers · 192.168.0.70:5569</footer>
 
 <div id="lb">
   <div class="bar"><b id="lbTitle"></b><span id="lbInfo"></span>
@@ -322,7 +354,8 @@ async function loadModels(){
       <span class="apiName" title="点击复制" onclick="event.stopPropagation();navigator.clipboard.writeText('${m.key}');this.textContent='✓ 已复制';setTimeout(()=>this.textContent='API model: ${m.key}',1200)">API model: ${m.key}</span>
       <div class="acts">
         <button class="mini" data-act="warm">预热加载</button>
-        <a class="mini link" href="${COMFY_URL}" target="_blank" rel="noopener">打开 ComfyUI</a>
+        <button class="mini" data-act="gen">生成</button>
+        <a class="mini link comfyLink" href="${COMFY_URL}" target="_blank" rel="noopener">打开 ComfyUI</a>
         <span class="loadstate"><span class="dot"></span><span class="txt">未加载</span></span>
       </div>`;
     d.onclick = (e) => {
@@ -347,6 +380,40 @@ async function loadModels(){
       await fetch("/api/launch", {method:"POST", headers:{"Content-Type":"application/json"},
                                   body: JSON.stringify({model: m.key})});
       refreshStatus();
+    };
+    const gbtn = d.querySelector('[data-act="gen"]');
+    gbtn.onclick = async (e) => {
+      e.stopPropagation();
+      const prompt = document.getElementById("prompt").value.trim();
+      if(!prompt){ alert("请先在上方输入提示词"); return; }
+      // 尺寸：优先用面板里的宽/高，留空则用模型默认
+      const wv = document.getElementById("width").value;
+      const hv = document.getElementById("height").value;
+      const size = (wv && hv) ? `${parseInt(wv)}x${parseInt(hv)}`
+                              : `${m.default_size[0]}x${m.default_size[1]}`;
+      const seedEl = document.getElementById("seed").value;
+      const seed = seedEl ? parseInt(seedEl) : 42;
+      gbtn.disabled = true; gbtn.textContent = "生成中…";
+      try{
+        const r = await fetch("/v1/images/generations", {method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({model: m.key, prompt: prompt,
+            size: size, seed: seed, backend: CURRENT_BACKEND,
+            response_format: "url"})});
+        const d2 = await r.json();
+        if(r.ok && d2.data && d2.data[0]){
+          const image = (d2.data[0].url || "").split("/").pop();
+          // 直接显示在"对比结果"列表，不弹大图
+          render({models:[m.key], status:"done",
+                  results:[{model:m.key, status:"ok", image:image, seed:seed,
+                            duration:d2.duration_s, size:d2.size}]});
+          document.getElementById("resultPanel").scrollIntoView({behavior:"smooth", block:"start"});
+          loadHistory();   // 历史立即出现，无需手动刷新
+        } else {
+          alert("生成失败: " + JSON.stringify(d2).slice(0,300));
+        }
+      }catch(err){ alert("生成失败: " + err); }
+      finally{ gbtn.disabled = false; gbtn.textContent = "生成"; refreshStatus(); }
     };
     box.appendChild(d);
   });
@@ -420,7 +487,7 @@ function render(job){
       return `<div class="res"><div class="hd"><b>${LABEL[r.model]||r.model}</b>${badge("ok")}</div>
         <img src="/image/${r.image}" alt="${LABEL[r.model]||r.model}"
              onclick="openLightbox('/image/${r.image}', '${LABEL[r.model]||r.model}', '${r.duration}s · ${r.size||''}')">
-        <div class="ft"><span>${r.size||""}</span><span>${r.duration}s</span></div></div>`;
+        <div class="ft"><span>${r.size||""}</span><span>seed ${r.seed ?? "-"}</span><span>${r.duration}s</span></div></div>`;
     }
     return `<div class="res"><div class="hd"><b>${LABEL[r.model]||r.model}</b>${badge("err")}</div>
       <div style="padding:16px;color:#ff9a9a;font-size:12px">${(r.error||"失败").slice(0,300)}</div></div>`;
@@ -460,7 +527,8 @@ document.getElementById("go").onclick = async () => {
         prompt, models:[...selected],
         width: width? parseInt(width): null,
         height: height? parseInt(height): null,
-        seed: seed? parseInt(seed): 42
+        seed: seed? parseInt(seed): 42,
+        backend: CURRENT_BACKEND
       })
     });
     const data = await r.json();
@@ -484,10 +552,13 @@ async function loadHistory(){
   rows.forEach(h=>{ HIST[h.id] = h.prompt; });
   box.innerHTML = rows.map(h=>{
     const d = new Date(h.created*1000).toLocaleString();
-    const thumbs = (h.images||[]).map(im=>
-      `<img src="/image/${im.image}" title="${LABEL[im.model]||im.model} · ${im.duration||0}s"
-            onclick="event.stopPropagation();openLightbox('/image/${im.image}','${LABEL[im.model]||im.model}','${im.duration||0}s')">`
-    ).join("");
+    const thumbs = (h.images||[]).map(im=>{
+      const meta = `${im.size||"-"} · seed ${im.seed ?? "-"} · ${im.duration||0}s`;
+      return `<div class="hthumb">
+        <img src="/image/${im.image}" title="${LABEL[im.model]||im.model} · ${meta}"
+             onclick="event.stopPropagation();openLightbox('/image/${im.image}','${LABEL[im.model]||im.model}','${meta}')">
+        <span class="hmeta">${meta}</span></div>`;
+    }).join("");
     return `<div class="histitem" onclick="showJob('${h.id}')">
       <div class="row1"><label class="cb" onclick="event.stopPropagation()">
           <input type="checkbox" class="selbox" data-id="${h.id}"
@@ -600,6 +671,90 @@ function applyTransform(){
 }
 
 let lbCurrent = "";
+
+let s36Timer = null;
+
+async function refreshStress36(){
+  try{
+    const d = await (await fetch("/api/stress36/status")).json();
+    const el = document.getElementById("s36status");
+    if(d.running){
+      el.textContent = `运行中 · ${d.elapsed}s · ok=${d.ok} err=${d.err} · 并发${d.conc}`;
+      document.getElementById("s36start").disabled = true;
+      document.getElementById("s36stop").disabled = false;
+    }else{
+      el.textContent = d.start ? `已停止 · ok=${d.ok} err=${d.err}` : "未运行";
+      document.getElementById("s36start").disabled = false;
+      document.getElementById("s36stop").disabled = true;
+      if(s36Timer){ clearInterval(s36Timer); s36Timer = null; }
+    }
+  }catch(e){}
+}
+
+async function startStress36(){
+  const conc = parseInt(document.getElementById("s36conc").value) || 4;
+  const duration = parseInt(document.getElementById("s36dur").value) || 300;
+  const r = await fetch("/api/stress36/start", {method:"POST",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify({conc, duration})});
+  const d = await r.json();
+  if(!r.ok){ alert("启动失败: " + JSON.stringify(d).slice(0,200)); return; }
+  if(!s36Timer) s36Timer = setInterval(refreshStress36, 2000);
+  refreshStress36();
+}
+
+async function stopStress36(){
+  await fetch("/api/stress36/stop", {method:"POST"});
+  refreshStress36();
+}
+
+let CURRENT_BACKEND = "comfy";
+
+function applyBackendUI(backend){
+  const b = (backend === "comfy") ? "comfy" : "direct";
+  CURRENT_BACKEND = b;
+  document.body.dataset.backend = b;
+  const chip = document.getElementById("backendChip");
+  if(chip){
+    chip.textContent = b === "comfy" ? "后端：ComfyUI" : "后端：直连 diffusers";
+    chip.style.color = b === "comfy" ? "#f5c451" : "#7ee0a1";
+    chip.style.borderColor = b === "comfy" ? "#5a4a1e" : "#1f5a35";
+    chip.style.background = b === "comfy" ? "#2a2410" : "#102a1c";
+  }
+  document.querySelectorAll(".comfyLink").forEach(a=>{ a.style.display = (b === "comfy") ? "" : "none"; });
+}
+
+async function loadSettings(){
+  try{
+    const r = await fetch("/api/settings");
+    const d = await r.json();
+    document.getElementById("setBackend").value = d.backend || "direct";
+    applyBackendUI(d.backend || "direct");
+    document.getElementById("setGate").checked = !!d.gate;
+    document.getElementById("setClocks").checked = !!d.clocks;
+    document.getElementById("setStatus").textContent =
+      `当前：${d.backend === "comfy" ? "ComfyUI" : "直连"} · 门控${d.gate ? "开" : "关"} · 锁频${d.clocks ? "开" : "关"}`;
+  }catch(e){}
+}
+
+async function saveSettings(){
+  const body = {
+    backend: document.getElementById("setBackend").value,
+    gate: document.getElementById("setGate").checked,
+    clocks: document.getElementById("setClocks").checked
+  };
+  document.getElementById("setStatus").textContent = "保存中…";
+  try{
+    const r = await fetch("/api/settings", {method:"POST",
+      headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+    const d = await r.json();
+    applyBackendUI(d.backend || "direct");
+    refreshStatus();
+    document.getElementById("setStatus").textContent =
+      `已保存：${d.backend === "comfy" ? "ComfyUI" : "直连"} · 门控${d.gate ? "开" : "关"} · 锁频${d.clocks ? "开" : "关"}`;
+  }catch(e){
+    document.getElementById("setStatus").textContent = "保存失败: " + e;
+  }
+}
 
 function openLightbox(src, title, info){
   lbCurrent = src;
@@ -783,6 +938,8 @@ fetch("/api/version").then(r=>r.json()).then(d=>{
 
 loadModels();
 loadHistory();
+loadSettings();
+refreshStress36();
 loadPower();
 fetch("/api/edit/model").then(r=>r.json()).then(d=>{
   const el = document.getElementById("editReady");

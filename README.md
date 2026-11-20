@@ -1,9 +1,20 @@
 # ImageHub
 
 > 统一文生图 / 图片编辑平台：一个网页 + 一套 OpenAI 兼容 API，统一调度多个开源图像模型。
-> 底层用 [ComfyUI](https://github.com/comfyanonymous/ComfyUI) 执行推理，ImageHub 负责模型驻留调度、并发排队、历史记录与鉴权。
+> 支持两条执行后端：**直连 diffusers 服务**（推荐）或 **ComfyUI**；ImageHub 负责后端切换、模型驻留调度、并发排队、历史记录与鉴权。
 
-![version](https://img.shields.io/badge/version-1.3.5-blue)
+![version](https://img.shields.io/badge/version-1.4.0-blue)
+
+## 1.4.0 主要更新
+
+- **双后端可切换**：`直连 diffusers`（每模型一个独立 FastAPI 服务，`services/` 目录）与 `ComfyUI`，可在页面底部切换并保存到 `settings.json`
+- **API 增加 `backend` 参数**：`comfyui | direct`，按请求选择后端；省略则用全局设置
+- **模型卡「生成」按钮**：按当前提示词、尺寸、种子、后端直接出图，结果进入「对比结果」列表并立即写入历史
+- **运行设置面板**：后端切换、vLLM 空闲门控、GPU 锁频（1410MHz）开关，一键保存
+- **3.6 对话压测**：页面内开始/停止，实时显示 ok/err/耗时
+- **历史记录元数据**：每条记录显示分辨率 · seed · 耗时
+- **尺寸保护**：按模型校验最大分辨率（qwen 1024，其余 2048），超限直接返回明确错误
+- **稳定性提示**：vLLM 满载时切换图像后端可能触发整机冻结（跨 GPU 显存分配 + P2P 同步问题），建议低峰切换或开启门控
 
 ---
 
@@ -257,22 +268,26 @@ systemctl enable --now gpu-power-cap gpu-power-logger
 
 ### 文生图（OpenAI 兼容）
 
+
 ```bash
 curl -X POST http://<IP>:5569/v1/images/generations \
   -H "Content-Type: application/json" \
-  -d '{"model":"h3","prompt":"赛博朋克城市夜景","size":"2048x2048","response_format":"url"}'
+  -d '{"model":"qwen","prompt":"赛博朋克城市夜景","size":"1024x1024","seed":42,"backend":"direct","response_format":"url"}'
 ```
 
 | 参数 | 说明 |
 |------|------|
-| `model` | `h3` / `qwen` / `qwen_uc` / `zimage` / `moss` / **`auto`** |
+| `model` | `h3` / `qwen` / `zimage` / `moss` / **`auto`** |
 | `prompt` | 提示词 |
 | `size` | `宽x高`，不传用模型默认 |
 | `response_format` | `url`（相对路径）或 `b64_json` |
 | `only_loaded` | `true` 时只用当前已加载模型，不触发加载（未加载返回 409/503） |
 | `seed` | 随机种子，默认 42 |
+| `backend` | `comfyui`（默认，或全局设置）/ `direct`（直连 diffusers） |
 
-`model: "auto"`：优先用当前已加载的模型；没有则回落到 `h3`。
+`model: "auto"`：优先用当前已加载的模型；没有则回落到 `qwen`。
+
+**分辨率上限**（服务端校验，超限返回明确错误）：`qwen` 1024，`h3`/`zimage`/`moss` 2048（moss 2048 极慢，不建议）。
 
 Python（OpenAI SDK）：
 
@@ -299,6 +314,8 @@ open("out.png","wb").write(base64.b64decode(r.data[0].b64_json))
 | `GET /api/power` · `POST /api/power` | GPU 功耗查询/设置 |
 | `GET /api/history` · `DELETE /api/history/{id}` · `POST /api/history/batch-delete` | 历史记录 |
 | `GET /api/version` | 版本号 |
+| `GET /api/settings` · `POST /api/settings` | 后端/门控/锁频设置（持久化到 settings.json） |
+| `POST /api/stress36/start` · `POST /api/stress36/stop` · `GET /api/stress36/status` | 3.6 对话压测 |
 
 ### 调度行为
 
