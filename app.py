@@ -904,7 +904,8 @@ class OAIImageRequest(BaseModel):
 def v1_models():
     return {"object": "list",
             "data": [{"id": k, "object": "model", "owned_by": "imagehub",
-                      "label": v["label"], "default_size": list(v["size"])}
+                      "label": v["label"], "default_size": list(v["size"]),
+                      "max_size": v.get("max_size")}
                      for k, v in MODELS.items() if not v.get("hidden")]}
 
 
@@ -952,7 +953,10 @@ def v1_generate(req: OAIImageRequest):
                     backend=_req_backend(getattr(req, "backend", None),
                                         getattr(req, "com", None)))
     if res.get("status") != "ok" or not res.get("image"):
-        raise HTTPException(500, res.get("error", "生成失败"))
+        err = res.get("error", "生成失败")
+        if "最大支持" in err:
+            raise HTTPException(400, err)
+        raise HTTPException(500, err)
     data = []
     if req.response_format == "b64_json":
         path = os.path.join(OUTPUT_DIR, res["image"])
