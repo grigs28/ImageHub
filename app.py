@@ -27,7 +27,7 @@ import uuid
 import urllib.request
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 from urllib.parse import quote
@@ -2170,11 +2170,16 @@ def api_status():
 
 
 @app.get("/api/history")
-def api_history(limit: int = 30):
+def api_history(response: Response, limit: int = 30, offset: int = 0):
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
     conn = db()
-    rows = conn.execute("SELECT id,prompt,models,created,results,status FROM jobs ORDER BY created DESC LIMIT ?",
-                        (limit,)).fetchall()
+    total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+    rows = conn.execute("SELECT id,prompt,models,created,results,status FROM jobs "
+                        "ORDER BY created DESC LIMIT ? OFFSET ?",
+                        (limit, offset)).fetchall()
     conn.close()
+    response.headers["X-Total-Count"] = str(total)
     out = []
     for r in rows:
         try:

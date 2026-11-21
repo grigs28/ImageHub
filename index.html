@@ -329,6 +329,12 @@
       <button class="mini" onclick="clearHistory()" style="font-size:11px">清空全部</button>
     </div>
     <div class="hist" id="historyList"></div>
+    <div class="row" style="margin-top:10px;gap:10px;align-items:center">
+      <button class="mini" id="histPrev" onclick="loadHistory(HIST_PAGE-1)">← 上一页</button>
+      <span id="histPage" class="sub">第 1 页</span>
+      <button class="mini" id="histNext" onclick="loadHistory(HIST_PAGE+1)">下一页 →</button>
+      <span id="histTotal" class="sub"></span>
+    </div>
   </div>
 </div>
 <div class="page" data-page="api">
@@ -672,11 +678,26 @@ document.getElementById("go").onclick = async () => {
   }
 };
 
-async function loadHistory(){
-  const r = await fetch("/api/history?limit=20");
+let HIST_PAGE = 0, HIST_LIMIT = 20, HIST_TOTAL = 0;
+
+async function loadHistory(page){
+  if(page !== undefined) HIST_PAGE = Math.max(0, page);
+  const r = await fetch(`/api/history?limit=${HIST_LIMIT}&offset=${HIST_PAGE*HIST_LIMIT}`);
+  HIST_TOTAL = parseInt(r.headers.get("X-Total-Count") || "0", 10);
   const rows = await r.json();
+  const pages = Math.max(1, Math.ceil(HIST_TOTAL / HIST_LIMIT));
+  const pv = document.getElementById("histPrev"), nx = document.getElementById("histNext");
+  if(pv) pv.disabled = HIST_PAGE <= 0;
+  if(nx) nx.disabled = HIST_PAGE >= pages - 1;
+  const pg = document.getElementById("histPage");
+  if(pg) pg.textContent = `第 ${HIST_PAGE+1} / ${pages} 页`;
+  const tt = document.getElementById("histTotal");
+  if(tt) tt.textContent = `共 ${HIST_TOTAL} 条`;
   const box = document.getElementById("historyList");
-  if(!rows.length){ box.innerHTML = '<span class="sub">暂无记录</span>'; return; }
+  if(!rows.length){
+    if(HIST_PAGE > 0){ HIST_PAGE -= 1; return loadHistory(HIST_PAGE); }
+    box.innerHTML = '<span class="sub">暂无记录</span>'; return;
+  }
   box.style.maxHeight = "";
   HIST = {};
   rows.forEach(h=>{ HIST[h.id] = h.prompt; });
@@ -1421,7 +1442,7 @@ loadAdminPresets();
 loadUsers();
 loadKeys();
 // 定时刷新历史（其他客户端/API 生成的图也能自动出现）
-setInterval(loadHistory, 20000);
+setInterval(()=>{ if(HIST_PAGE === 0) loadHistory(); }, 20000);
 setInterval(refreshStatus, 5000);
 loadPower();
 fetch("/api/edit/model").then(r=>r.json()).then(d=>{
