@@ -482,7 +482,8 @@ async function loadModels(){
       e.stopPropagation();
       const prompt = document.getElementById("prompt").value.trim();
       if(!prompt){ alert("请先在上方输入提示词"); return; }
-      if(!confirm("注意：生成可能需要重新加载模型。\n模型加载瞬间（大块显存分配）有概率导致整机崩溃。\n\n确定继续吗？")) return;
+      await refreshStatus();
+      if(needLoad([m.key]) && !confirm(LOAD_WARN)) return;
       // 尺寸：优先用面板里的宽/高，留空则用模型默认
       const wv = document.getElementById("width").value;
       const hv = document.getElementById("height").value;
@@ -612,11 +613,9 @@ document.getElementById("go").onclick = async () => {
   const prompt = document.getElementById("prompt").value.trim();
   if(!prompt) return alert("请输入提示词");
   if(!selected.size) return alert("请至少选择一个模型");
-  // 加载/重载模型是唯一高风险窗口，先让用户确认
-  const needLoad = (st.backend === "comfy") ? false : true;
-  const warn = "注意：生成对比可能需要重新加载模型。\n" +
-               "模型加载瞬间（大块显存分配）有概率导致整机崩溃。\n\n确定继续吗？";
-  if(!confirm(warn)) return;
+  // 仅在需要加载/切换模型时提示（模型加载是唯一高风险窗口）
+  await refreshStatus();
+  if(needLoad([...selected]) && !confirm(LOAD_WARN)) return;
   const width = document.getElementById("width").value;
   const height = document.getElementById("height").value;
   const seed = document.getElementById("seed").value;
@@ -1302,6 +1301,12 @@ async function runDesign(){
     loadHistory();
   }catch(e){ st.textContent = "失败: " + e; }
   finally{ btn.disabled = false; }
+}
+
+const LOAD_WARN = "注意：本次需要重新加载模型。\n模型加载瞬间（大块显存分配）有概率导致整机崩溃。\n\n确定继续吗？";
+function needLoad(models){
+  const cur = st && st.loaded ? st.loaded : null;
+  return models.some(k => k !== cur);
 }
 
 function switchPage(name){
