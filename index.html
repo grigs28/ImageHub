@@ -270,6 +270,7 @@
         <option value="depth">depth 深度图（需上传深度图）</option>
         <option value="raw">raw 原图直用</option></select></label>
       <label class="small">控制强度<input type="number" id="ctrlStrength" value="0.8" min="0" max="1" step="0.05" style="width:70px"></label>
+      <button class="mini" onclick="autoDepth()">自动生成深度图</button>
       <button class="mini" id="designBtn" onclick="runDesign()">生成效果图</button>
       <button class="mini" onclick="runViews()">多角度（2 个视角）</button>
       <button class="mini" onclick="runOutpaint()">扩图 +256</button>
@@ -379,6 +380,19 @@
       <span id="keyStatus" class="sub"></span>
     </div>
     <div id="keyRows" style="margin-top:10px;display:flex;flex-direction:column;gap:6px"></div>
+  </div>
+  <div class="panel" id="adminPresets">
+    <h2>设计预设管理</h2>
+    <div class="sub">自定义材质 / 光照 / 风格 / 视角，保存后出现在设计页下拉与 API 的 /v1/design/presets。</div>
+    <div class="row" style="margin-top:10px;gap:10px;flex-wrap:wrap;align-items:center">
+      <label class="small">类型<select id="presetKind">
+        <option value="materials">材质</option><option value="lighting">光照</option>
+        <option value="styles">风格</option><option value="views">视角</option></select></label>
+      <label class="small">值<input id="presetValue" placeholder="如：阳极氧化铝" style="width:180px"></label>
+      <button class="mini" onclick="addPreset()">添加</button>
+      <span id="presetStatus" class="sub"></span>
+    </div>
+    <div id="presetRows" style="margin-top:8px;display:flex;flex-direction:column;gap:4px"></div>
   </div>
   <div class="panel" id="adminAudit">
     <h2>审计日志</h2>
@@ -841,6 +855,53 @@ async function loadAudit(){
   }catch(e){}
 }
 
+async function loadAdminPresets(){
+  try{
+    const rows = await (await fetch("/api/admin/presets")).json();
+    const box = document.getElementById("presetRows");
+    if(!Array.isArray(rows)){ box.innerHTML = '<span class="sub">无权限</span>'; return; }
+    box.innerHTML = rows.map(p=>`<div class="row" style="justify-content:space-between;border-bottom:1px dashed #2a3040;padding:3px 0">
+      <span>${p.kind} · ${p.value}</span>
+      <button class="mini" onclick="delPreset(${p.id})">删除</button></div>`).join("")
+      || '<span class="sub">暂无自定义预设</span>';
+  }catch(e){}
+}
+async function addPreset(){
+  const kind = document.getElementById("presetKind").value;
+  const value = document.getElementById("presetValue").value.trim();
+  if(!value) return;
+  const r = await fetch("/api/admin/presets", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({kind, value})});
+  document.getElementById("presetStatus").textContent = r.ok ? "已添加" : "失败";
+  document.getElementById("presetValue").value = "";
+  loadAdminPresets(); loadPresets();
+loadAdminPresets();
+}
+async function delPreset(id){
+  await fetch(`/api/admin/presets/${id}`, {method:"DELETE"});
+  loadAdminPresets(); loadPresets();
+loadAdminPresets();
+}
+
+async function autoDepth(){
+  const st = document.getElementById("designStatus");
+  const f = document.getElementById("ctrlFile").files[0];
+  let img = CTRL_B64;
+  if(f){ img = await new Promise(res=>{const fr=new FileReader();fr.onload=()=>res(String(fr.result).split(",")[1]);fr.readAsDataURL(f);}); }
+  if(!img){ st.textContent = "请先选择图片或从图库导入"; return; }
+  st.textContent = "生成深度图（CPU 约 3 秒）…";
+  try{
+    const r = await fetch("/v1/design/preprocess", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({image: img, type: "depth"})});
+    const d = await r.json();
+    if(!r.ok){ st.textContent = "失败: " + JSON.stringify(d).slice(0,150); return; }
+    CTRL_B64 = d.image_b64;
+    document.getElementById("ctrlType").value = "depth";
+    document.getElementById("ctrlFrom").textContent = "控制图：自动深度图 ✓";
+    st.textContent = `深度图已生成（${d.width}×${d.height}）`;
+  }catch(e){ st.textContent = "失败: " + e; }
+}
+
 async function loadUsers(){
   try{
     const r = await fetch("/api/admin/users");
@@ -1270,6 +1331,7 @@ refreshStress36();
 loadProjects();
 loadAudit();
 loadPresets();
+loadAdminPresets();
 loadUsers();
 loadKeys();
 // 定时刷新历史（其他客户端/API 生成的图也能自动出现）

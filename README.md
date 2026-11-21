@@ -18,7 +18,9 @@
   - `POST /v1/design/views`（多角度：人视/鸟瞰/立面等，最多 4 个）
   - `POST /v1/design/async`（异步排队 + 可选 webhook 回调）
   - `POST /v1/design/outpaint`（四边扩图，+expand 像素）
-  - `GET /v1/design/presets`（材质/光照/风格/视角预设）
+  - `GET /v1/design/presets`（材质/光照/风格/视角预设，含管理页自定义项）
+  - `POST /v1/design/preprocess`（自动深度图 / 法线图，CPU 推理约 3 秒）
+  - `POST /api/admin/presets` · `DELETE /api/admin/presets/{id}`（自定义预设管理）
   - 实测：ControlNet 1024 约 25s、1536 约 39s、2048 约 69s
   - `GET /v1/jobs/{id}`（任务查询）
 - **多工作流注册表**：同一模型可按功能选不同工作流（qwen: t2i / controlnet）
@@ -36,7 +38,18 @@ systemctl restart comfyui-h3
 ```
 
 > int8 convrot 版（3.5G）在 RTX 3090 上实测可用；bf16 版（7G）显存更紧张。
-> ControlNet 目前仅支持 ComfyUI 后端；直连 diffusers 适配在路线图 P3。
+> ControlNet 目前仅支持 ComfyUI 后端：**diffusers 0.43 尚无 Qwen-Image-2.1 的 ControlNet pipeline**，
+> 2.1 的 Fun ControlNet 权重是 ComfyUI model patch 格式，直连需自行移植（见路线图）。
+
+### 深度预处理（可选）
+
+```bash
+modelscope download --model depth-anything/Depth-Anything-V2-Small-hf \
+  --local_dir /opt/models/depth-anything/Depth-Anything-V2-Small-hf
+```
+
+`POST /v1/design/preprocess {"image": "...", "type": "depth"}` 返回深度图；`type=normal` 返回法线图。
+CPU 推理，不占显存。
 
 ## 1.4.0 主要更新
 

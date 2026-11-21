@@ -243,6 +243,9 @@ def db():
     conn.execute("""CREATE TABLE IF NOT EXISTS audit(
         id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT, action TEXT,
         detail TEXT, created REAL)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS presets(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, value TEXT, created REAL,
+        UNIQUE(kind, value))""")
     conn.execute("""CREATE TABLE IF NOT EXISTS projects(
         id TEXT PRIMARY KEY, name TEXT, owner TEXT, created REAL)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS assets(
@@ -1609,7 +1612,113 @@ DESIGN_PRESETS = {
 def api_design_presets(request: Request, apikey: Optional[str] = None):
     if not _api_authed(apikey, request):
         raise HTTPException(401, "需要 API Key")
-    return DESIGN_PRESETS
+    out = {k: list(v) for k, v in DESIGN_PRESETS.items()}
+    try:
+        conn = db()
+        for kind, value in conn.execute("SELECT kind,value FROM presets ORDER BY id").fetchall():
+            if kind in out and value not in out[kind]:
+                out[kind].append(value)
+        conn.close()
+    except Exception:
+        pass
+    return out
+
+
+class PresetReq(BaseModel):
+    kind: str
+    value: str
+
+
+@app.get("/api/admin/presets")
+def admin_presets(request: Request):
+    _require_admin(request)
+    conn = db()
+    rows = conn.execute("SELECT id,kind,value FROM presets ORDER BY kind,id").fetchall()
+    conn.close()
+    return [{"id": r[0], "kind": r[1], "value": r[2]} for r in rows]
+
+
+@app.post("/api/admin/presets")
+def admin_add_preset(req: PresetReq, request: Request):
+    _require_admin(request)
+    if req.kind not in DESIGN_PRESETS:
+        raise HTTPException(400, f"kind 只能是 {list(DESIGN_PRESETS)}")
+    v = (req.value or "").strip()
+    if not v:
+        raise HTTPException(400, "value 不能为空")
+    conn = db()
+    try:
+        conn.execute("INSERT OR IGNORE INTO presets(kind,value,created) VALUES(?,?,?)",
+                     (req.kind, v, time.time()))
+        conn.commit()
+    finally:
+        conn.close()
+    _audit((request.session.get("user") or {}).get("username", "admin"),
+           "preset.add", {"kind": req.kind, "value": v})
+    return {"ok": True}
+
+
+@app.delete("/api/admin/presets/{pid}")
+def admin_del_preset(pid: int, request: Request):
+    _require_admin(request)
+    conn = db()
+    conn.execute("DELETE FROM presets WHERE id=?", (pid,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ---- 深度 / 法线预处理（CPU）----
+_depth_pipe = None
+
+
+def _get_depth_pipe():
+    global _depth_pipe
+    if _depth_pipe is None:
+        from transformers import pipeline as _hf_pipeline
+        _depth_pipe = _hf_pipeline(
+            "depth-estimation",
+            model="/opt/models/depth-anything/Depth-Anything-V2-Small-hf",
+            device=-1)
+    return _depth_pipe
+
+
+class PreprocessReq(BaseModel):
+    image: str
+    type: str = "depth"        # depth | normal
+    apikey: Optional[str] = None
+
+
+@app.post("/v1/design/preprocess")
+def api_design_preprocess(req: PreprocessReq, request: Request):
+    """自动生成控制图：深度图或法线图（CPU 推理，不占显存）"""
+    if not _api_authed(req.apikey, request):
+        raise HTTPException(401, "需要 API Key")
+    import io as _io
+    from PIL import Image as _Img
+    raw = (req.image or "").split(",")[-1]
+    try:
+        img = _Img.open(_io.BytesIO(base64.b64decode(raw))).convert("RGB")
+    except Exception:
+        raise HTTPException(400, "image base64 解析失败")
+    try:
+        depth = _get_depth_pipe()(img)["depth"]
+    except Exception as e:
+        raise HTTPException(500, f"深度推理失败: {str(e)[:200]}")
+    if req.type == "normal":
+        import numpy as np
+        d = np.asarray(depth.resize(img.size)).astype(np.float32) / 255.0
+        gy, gx = np.gradient(d)
+        nz = np.ones_like(d) * 0.6
+        nx, ny = -gx * 8.0, -gy * 8.0
+        ln = np.sqrt(nx ** 2 + ny ** 2 + nz ** 2)
+        rgb = np.stack([(nx / ln + 1) / 2, (ny / ln + 1) / 2, (nz / ln)], axis=-1)
+        out = _Img.fromarray((rgb * 255).clip(0, 255).astype(np.uint8), "RGB")
+    else:
+        out = depth.convert("RGB") if getattr(depth, "mode", None) != "RGB" else depth
+    buf = _io.BytesIO(); out.save(buf, "PNG")
+    return {"type": req.type, "width": out.width, "height": out.height,
+            "image_b64": base64.b64encode(buf.getvalue()).decode()}
 
 
 class ViewsReq(BaseModel):
