@@ -482,6 +482,7 @@ async function loadModels(){
       e.stopPropagation();
       const prompt = document.getElementById("prompt").value.trim();
       if(!prompt){ alert("请先在上方输入提示词"); return; }
+      if(!confirm("注意：生成可能需要重新加载模型。\n模型加载瞬间（大块显存分配）有概率导致整机崩溃。\n\n确定继续吗？")) return;
       // 尺寸：优先用面板里的宽/高，留空则用模型默认
       const wv = document.getElementById("width").value;
       const hv = document.getElementById("height").value;
