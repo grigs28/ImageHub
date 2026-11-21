@@ -7,6 +7,7 @@
 
 ## 1.5.0 主要更新（设计版）
 
+> GPU 归属调整见 [`docs/70服务器GPU归属调整.md`](docs/70服务器GPU归属调整.md)；
 > 详细交付记录见 [`docs/ImageHub设计版成果报告.md`](docs/ImageHub设计版成果报告.md)，需求分析见 [`docs/ImageHub设计版需求分析.md`](docs/ImageHub设计版需求分析.md)。
 
 - **页面拆分**：工作台 / 图库 / API / 管理（仅管理员），刷新保持当前页

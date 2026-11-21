@@ -149,23 +149,23 @@ SERVICES = {
     "qwen": {
         "port": 5566, "cwd": "/opt/models/Qwen/Qwen-Image-2.1-Turbo",
         "app": "qwenimage_server:app",
-        "env": {"CUDA_VISIBLE_DEVICES": "2,3", "QIMAGE_VAE_TILING": "1"},
+        "env": {"CUDA_VISIBLE_DEVICES": "0,1", "QIMAGE_VAE_TILING": "1"},
         "needs": ["/opt/models/Qwen/Qwen-Image-2.1-Turbo/model_index.json"],
     },
     "zimage": {
         "port": 5565, "cwd": "/opt/models/Tongyi-MAI/Z-Image-Turbo",
-        "app": "zimage_server:app", "env": {"CUDA_VISIBLE_DEVICES": "2"},
+        "app": "zimage_server:app", "env": {"CUDA_VISIBLE_DEVICES": "0,1", "ZIMAGE_BALANCED": "1"},
         "needs": ["/opt/models/Tongyi-MAI/Z-Image-Turbo/model_index.json"],
     },
     "moss": {
         "port": 5567, "cwd": "/opt/models/OpenMOSS/MOSS-Image-SFT",
-        "app": "moss_server:app", "env": {"CUDA_VISIBLE_DEVICES": "2,3", "MOSS_SPLIT": "1"},
+        "app": "moss_server:app", "env": {"CUDA_VISIBLE_DEVICES": "0,1", "MOSS_SPLIT": "1"},
         "needs": ["/opt/models/OpenMOSS/MOSS-Image-SFT/model_index.json"],
     },
     "edit": {
         "port": 5564, "cwd": "/opt/models/Qwen/Qwen-Image-Edit-2511",
         "app": "qwen_edit_server:app",
-        "env": {"CUDA_VISIBLE_DEVICES": "2,3", "EDIT_MODE": "split"},
+        "env": {"CUDA_VISIBLE_DEVICES": "0,1", "EDIT_MODE": "split"},
         "needs": [
             "/opt/models/Qwen/Qwen-Image-Edit-2511/model_index.json",
             "/opt/models/Comfy-Org/Qwen-Image-Edit-2511-gguf/qwen-image-edit-2511-Q6_K.gguf",
@@ -179,7 +179,7 @@ SERVICES = {
                 "--llm", "/opt/models/Unsloth/MiniMax-H3-GGUF/qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
                 "--vae", "/opt/models/MiniMax/MiniMax-H3-Image/vae/diffusion_pytorch_model.safetensors",
                 "--backend", "diffusion=CUDA0,llm=CUDA1,vae=CUDA1"],
-        "env": {"CUDA_VISIBLE_DEVICES": "2,3"}, "health_path": "/v1/models", "api": "sdcpp",
+        "env": {"CUDA_VISIBLE_DEVICES": "0,1"}, "health_path": "/v1/models", "api": "sdcpp",
         "needs": ["/opt/models/Unsloth/MiniMax-H3-Image-GGUF/h3_ud_q6k_xl.gguf",
                   "/opt/models/Unsloth/MiniMax-H3-GGUF/qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
                   "/opt/models/MiniMax/MiniMax-H3-Image/vae/diffusion_pytorch_model.safetensors"],

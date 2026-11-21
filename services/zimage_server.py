@@ -36,17 +36,53 @@ def get_pipe():
         from diffusers import ZImagePipeline
         logger.info(f"加载模型: {MODEL_DIR}")
         t0 = time.time()
-        pipe = ZImagePipeline.from_pretrained(
-            MODEL_DIR, torch_dtype=torch.bfloat16, low_cpu_mem_usage=False,
-        )
-        # 24GB 卡 + 30.6GB 权重 → 分层 CPU 卸载（文本编码器用完即卸）
-        pipe.enable_model_cpu_offload()
+        if os.environ.get("ZIMAGE_BALANCED", "0") == "1":
+            pipe = ZImagePipeline.from_pretrained(
+                MODEL_DIR, torch_dtype=torch.bfloat16,
+                device_map="balanced", max_memory={0: "22GiB", 1: "22GiB"},
+            )
+            logger.info(f"balanced 分卡: {getattr(pipe, 'hf_device_map', None)}")
+        else:
+            pipe = ZImagePipeline.from_pretrained(
+                MODEL_DIR, torch_dtype=torch.bfloat16, low_cpu_mem_usage=False,
+            )
+        # 双卡：DiT+VAE 在 cuda:0，文本编码器在 cuda:1（更省时，且给高分辨率留余量）
+        if os.environ.get("ZIMAGE_BALANCED", "0") == "1":
+            pass
+        elif os.environ.get("ZIMAGE_SPLIT", "0") == "1":
+            pipe.transformer.to("cuda:0")
+            pipe.vae.to("cuda:0")
+            pipe.text_encoder.to("cuda:1")
+            try:
+                from diffusers import ZImagePipeline as _ZP
+                _ZP._execution_device = property(lambda self: torch.device("cuda:0"))
+                # 有些 diffusers pipeline 用 self.device 决定 latents 设备，这里一并固定到 DiT 卡
+                _ZP.device = property(lambda self: torch.device("cuda:0"))
+                _orig_enc = _ZP.encode_prompt
+
+                def _enc(self, *a, **kw):
+                    kw["device"] = self.text_encoder.device
+                    out = _orig_enc(self, *a, **kw)
+                    tgt = torch.device("cuda:0")
+                    if isinstance(out, tuple):
+                        return tuple(x.to(tgt) if torch.is_tensor(x) else x for x in out)
+                    return out.to(tgt) if torch.is_tensor(out) else out
+                _ZP.encode_prompt = _enc
+                logger.info("模式: 双卡 split（DiT+VAE=cuda:0, TE=cuda:1）")
+            except Exception as e:
+                logger.warning(f"双卡补丁失败，回退单卡: {e}")
+                pipe.text_encoder.to("cuda:0")
+        else:
+            # 24GB 卡 + 30.6GB 权重 → 分层 CPU 卸载（文本编码器用完即卸）
+            pipe.enable_model_cpu_offload()
         try:
             pipe.transformer.set_attention_backend("flash")
         except Exception as e:
             logger.warning(f"flash attention 不可用，用默认 SDPA: {e}")
         try:
             pipe.vae.enable_slicing()
+            if os.environ.get("ZIMAGE_SPLIT", "0") == "1" or os.environ.get("ZIMAGE_BALANCED", "0") == "1":
+                pipe.vae.enable_tiling()
         except Exception:
             pass
         _pipe = pipe
