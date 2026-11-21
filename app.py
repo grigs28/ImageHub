@@ -998,7 +998,8 @@ def run_job(job_id, prompt, model_keys, width, height, seed, backend=None):
             _jobs[job_id]["results"] = list(results)
         try:
             conn = db()
-            conn.execute("INSERT OR REPLACE INTO jobs VALUES (?,?,?,?,?,?)",
+            conn.execute("INSERT OR REPLACE INTO jobs(id,prompt,models,created,results,status) "
+                         "VALUES (?,?,?,?,?,?)",
                          (job_id, prompt, json.dumps(model_keys), time.time(),
                           json.dumps(results), "running"))
             conn.commit()
@@ -1008,7 +1009,8 @@ def run_job(job_id, prompt, model_keys, width, height, seed, backend=None):
     with _lock:
         _jobs[job_id]["status"] = "done"
         conn = db()
-        conn.execute("INSERT OR REPLACE INTO jobs VALUES (?,?,?,?,?,?)",
+        conn.execute("INSERT OR REPLACE INTO jobs(id,prompt,models,created,results,status) "
+                     "VALUES (?,?,?,?,?,?)",
                      (job_id, prompt, json.dumps(model_keys), time.time(),
                       json.dumps(results), "done"))
         conn.commit()

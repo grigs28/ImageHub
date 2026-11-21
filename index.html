@@ -709,7 +709,8 @@ async function loadHistory(page){
         <img src="/thumb/${im.image}?w=160" loading="lazy" title="${LABEL[im.model]||im.model} · ${meta}"
              onclick="event.stopPropagation();openLightbox('/image/${im.image}','${LABEL[im.model]||im.model}','${meta}')">
         <span class="hmeta">${meta}</span>
-        <button class="mini" style="font-size:10px;padding:1px 6px" onclick="event.stopPropagation();useAsControl('/image/${im.image}')">→控制图</button></div>`;
+        <button class="mini" style="font-size:10px;padding:1px 6px" onclick="event.stopPropagation();useAsControl('/image/${im.image}')">→控制图</button>
+        <button class="mini" style="font-size:10px;padding:1px 6px" onclick="event.stopPropagation();useAsReference('/image/${im.image}')">→参考图</button></div>`;
     }).join("");
     return `<div class="histitem" onclick="showJob('${h.id}')">
       <div class="row1"><label class="cb" onclick="event.stopPropagation()">
@@ -1259,6 +1260,20 @@ function applyPreset(kind){
   if(!v) return;
   const ta=document.getElementById("prompt");
   ta.value=(ta.value?ta.value.replace(/\s*$/,"")+"；":"")+label+v;
+}
+
+async function useAsReference(url){
+  const r = await fetch(url);
+  const blob = await r.blob();
+  const b64 = await new Promise(res=>{const fr=new FileReader();fr.onload=()=>res(fr.result);fr.readAsDataURL(blob);});
+  editB64 = b64;
+  const img = document.getElementById("editPreview");
+  img.src = b64; img.style.display = "block";
+  switchPage("work");
+  const p = document.getElementById("edit");
+  if(p) p.scrollIntoView({behavior:"smooth", block:"start"});
+  const st = document.getElementById("editStatus");
+  if(st) st.textContent = "已作为参考图载入，输入编辑指令即可";
 }
 
 async function useAsControl(url){
