@@ -583,7 +583,7 @@ function render(job){
   let html = results.map(r=>{
     if(r.status==="ok" && r.image){
       return `<div class="res"><div class="hd"><b>${LABEL[r.model]||r.model}</b>${badge("ok")}</div>
-        <img src="/image/${r.image}" alt="${LABEL[r.model]||r.model}"
+        <img src="/thumb/${r.image}?w=480" loading="lazy" alt="${LABEL[r.model]||r.model}"
              onclick="openLightbox('/image/${r.image}', '${LABEL[r.model]||r.model}', '${r.duration}s · ${r.size||''}')">
         <div class="ft"><span>${r.size||""}</span><span>seed ${r.seed ?? "-"}</span><span>${r.duration}s</span></div></div>`;
     }
@@ -656,7 +656,7 @@ async function loadHistory(){
     const thumbs = (h.images||[]).map(im=>{
       const meta = `${im.size||"-"} · seed ${im.seed ?? "-"} · ${im.duration||0}s`;
       return `<div class="hthumb">
-        <img src="/image/${im.image}" title="${LABEL[im.model]||im.model} · ${meta}"
+        <img src="/thumb/${im.image}?w=160" loading="lazy" title="${LABEL[im.model]||im.model} · ${meta}"
              onclick="event.stopPropagation();openLightbox('/image/${im.image}','${LABEL[im.model]||im.model}','${meta}')">
         <span class="hmeta">${meta}</span>
         <button class="mini" style="font-size:10px;padding:1px 6px" onclick="event.stopPropagation();useAsControl('/image/${im.image}')">→控制图</button></div>`;

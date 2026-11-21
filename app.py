@@ -2285,6 +2285,34 @@ def api_delete_history(job_id: str):
 
 
 LEGACY_DIRS = ["/opt/ComfyUI/output"]
+THUMB_DIR = os.path.join(BASE_DIR, "thumbs")
+os.makedirs(THUMB_DIR, exist_ok=True)
+
+
+@app.get("/thumb/{filename}")
+def thumb(filename: str, w: int = 160):
+    """缩略图：服务端缩放并缓存，避免浏览器解码几十 MB 原图"""
+    from PIL import Image as _Img
+    name = os.path.basename(filename)
+    w = max(64, min(int(w), 1024))
+    out = os.path.join(THUMB_DIR, f"{os.path.splitext(name)[0]}_{w}.jpg")
+    if not os.path.isfile(out):
+        src = None
+        for d in [OUTPUT_DIR] + LEGACY_DIRS:
+            cand = os.path.join(d, name)
+            if os.path.isfile(cand):
+                src = cand
+                break
+        if not src:
+            raise HTTPException(404, "not found")
+        try:
+            im = _Img.open(src).convert("RGB")
+            im.thumbnail((w, w * 8))
+            im.save(out, "JPEG", quality=82)
+        except Exception as e:
+            raise HTTPException(500, f"缩略图生成失败: {str(e)[:120]}")
+    return FileResponse(out, media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/image/{filename}")
