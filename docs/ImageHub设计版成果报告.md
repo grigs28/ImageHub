@@ -155,5 +155,6 @@ modelscope download --model depth-anything/Depth-Anything-V2-Small-hf \
 | 修复 | 对比任务未入库（jobs 加列后 SQL 未更新）、编辑缺 bf16 文本编码器、历史缩略图卡顿 |
 | 全功能压测 | 16 项功能在 3.6 四并发满载下全部通过（见 `ImageHub全功能压测记录.md`） |
 
-**仍未完成**：直连 diffusers 的 ControlNet——diffusers 官方（main）没有 Qwen-Image-2.1 的 ControlNet 实现，
-2.1 的 Fun ControlNet 仅以 ComfyUI model patch 形式发布；要直连需自行移植（1~2 天）。
+**架构决策（2026-11-21）**：设计类功能**统一由 ComfyUI 执行**，不再规划直连 diffusers 的 ControlNet 适配。
+原因：diffusers 官方（main 分支）没有 Qwen-Image-2.1 的 ControlNet 实现，2.1 的 Fun ControlNet 仅以 ComfyUI model patch 形式发布；
+现有 ComfyUI 路径已实测稳定（1024/1536/2048 = 25/39/69 秒）。

@@ -299,13 +299,13 @@
     </div>
   </div>
   <div class="panel">
-    <h2>后续可选（规划）</h2>
+    <h2>功能状态</h2>
     <div class="sub" style="line-height:1.9">
-      · 参考图库 ✅ 已上线（图库缩略图「→控制图」「→参考图」）<br>
-      · 材质与风格库 ✅ 已上线（设计页预设下拉 + 管理页自定义）<br>
-      · 扩图与多角度 ✅ 已上线（设计页「多角度」「扩图 +256」按钮）<br>
-      · 异步任务队列 + webhook ✅ 已上线（/v1/design/async）<br>
-      · 直连 diffusers 的 ControlNet：待 diffusers 上游支持（当前仅 ComfyUI 可行）
+      · 参考图库 ✅（图库缩略图「→控制图」「→参考图」）<br>
+      · 材质与风格库 ✅（设计页预设下拉 + 管理页自定义）<br>
+      · 扩图与多角度 ✅（设计页「多角度」「扩图 +256」按钮）<br>
+      · 异步任务队列 + webhook ✅（/v1/design/async）<br>
+      · 设计类统一由 ComfyUI 执行（不再规划直连 diffusers 适配）
     </div>
   </div>
   <div class="panel">
@@ -315,7 +315,6 @@
       · 控制图预处理：canny/lineart 自动生成边缘；depth 支持「自动生成深度图」（CPU 约 3 秒）<br>
       · 结构保持依赖控制强度（0.6~1.0），过高会压制材质表现，过低会改变结构<br>
       · 8 步蒸馏模型在复杂结构（细密栏杆、大量开窗）下仍可能出现局部错位
-      · 直连 diffusers 的 ControlNet 暂不可用：上游 diffusers 尚无 Qwen-Image-2.1 ControlNet 实现
     </div>
   </div>
 </div>

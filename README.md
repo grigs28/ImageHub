@@ -57,8 +57,8 @@ systemctl restart comfyui-h3
 ```
 
 > int8 convrot 版（3.5G）在 RTX 3090 上实测可用；bf16 版（7G）显存更紧张。
-> ControlNet 目前仅支持 ComfyUI 后端：**diffusers 0.43 尚无 Qwen-Image-2.1 的 ControlNet pipeline**，
-> 2.1 的 Fun ControlNet 权重是 ComfyUI model patch 格式，直连需自行移植（见路线图）。
+> **设计类统一走 ComfyUI**：diffusers 无 Qwen-Image-2.1 的 ControlNet 实现，2.1 的 Fun ControlNet
+> 仅以 ComfyUI model patch 形式发布；本项目**不再规划直连 ControlNet 适配**。
 
 ### 深度预处理（可选）
 

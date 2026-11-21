@@ -207,7 +207,7 @@ settings(key, value)  -- 后端/门控/锁频/预加载等
 | **P0** | 界面拆分（工作台/对比/图库/API/管理）、管理员路由与鉴权、配置迁到管理页、API Key 基础 | 1~2 天 |
 | **P1** | ControlNet（ComfyUI 路线：Fun-ControlNet-Union）、白模→效果图、线稿→效果图、异步 job API | 3~5 天 |
 | **P2** | 批量方案、项目/素材库、配额与审计、图板模板 | ~1 周 |
-| **P3** | 直连 diffusers ControlNet、inpaint/outpaint、风格/材质库 | 待定 |
+| **P3** | 扩图/局部重绘/风格材质库（已完成）；直连 ControlNet **不做**（统一走 ComfyUI） | 已完成 |
 
 ---
 
