@@ -611,6 +611,11 @@ document.getElementById("go").onclick = async () => {
   const prompt = document.getElementById("prompt").value.trim();
   if(!prompt) return alert("请输入提示词");
   if(!selected.size) return alert("请至少选择一个模型");
+  // 加载/重载模型是唯一高风险窗口，先让用户确认
+  const needLoad = (st.backend === "comfy") ? false : true;
+  const warn = "注意：生成对比可能需要重新加载模型。\n" +
+               "模型加载瞬间（大块显存分配）有概率导致整机崩溃。\n\n确定继续吗？";
+  if(!confirm(warn)) return;
   const width = document.getElementById("width").value;
   const height = document.getElementById("height").value;
   const seed = document.getElementById("seed").value;
