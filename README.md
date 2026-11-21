@@ -7,6 +7,8 @@
 
 ## 1.5.0 主要更新（设计版）
 
+> 详细交付记录见 [`docs/ImageHub设计版成果报告.md`](docs/ImageHub设计版成果报告.md)，需求分析见 [`docs/ImageHub设计版需求分析.md`](docs/ImageHub设计版需求分析.md)。
+
 - **页面拆分**：工作台 / 图库 / API / 管理（仅管理员），刷新保持当前页
 - **权限体系**：yz-login 用户同步到本地库，`is_admin` 以本地为准，可提权/降权；接口按管理员保护
 - **API Key**：可选（Bearer 或请求体 `apikey`），UI 可见可复制，只保留必要数量

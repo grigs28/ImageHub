@@ -33,7 +33,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from urllib.parse import quote
 from pydantic import BaseModel
 
-APP_VERSION = "1.4.0"          # ImageHub 版本号（1.4.0：直连后端，移除 ComfyUI）
+APP_VERSION = "1.5.0"          # ImageHub 版本号（1.5.0：设计版，ControlNet/权限/设计工作流）
 APP_BUILD = "2026-11-20"
 
 logger = logging.getLogger("imagehub")
