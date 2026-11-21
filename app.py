@@ -858,6 +858,16 @@ def _hash_key(k):
     return hashlib.sha256(k.encode()).hexdigest()
 
 
+def _api_authed(apikey, request=None):
+    """外部调用必须有 Key；网页登录会话可直接调用"""
+    if apikey:
+        ok, _ = _key_valid(apikey)
+        return ok
+    if request is not None and (request.session.get("user") or {}):
+        return True
+    return False
+
+
 def _key_valid(raw):
     """校验请求体中的 apikey；返回 (ok, info)"""
     if not raw:
@@ -1074,10 +1084,9 @@ def v1_models():
 
 
 @app.post("/v1/images/generations")
-def v1_generate(req: OAIImageRequest):
-    ok, keyinfo = _key_valid(getattr(req, "apikey", None))
-    if not ok:
-        raise HTTPException(401, "apikey 无效或已禁用")
+def v1_generate(req: OAIImageRequest, request: Request):
+    if not _api_authed(getattr(req, "apikey", None), request):
+        raise HTTPException(401, "需要 API Key（网页登录状态可直接调用）")
     raw_key = (req.model or "auto").strip()
     lowered = raw_key.lower()
     # model=auto/loaded/current：直接使用当前已加载模型
@@ -1471,11 +1480,10 @@ def _design_response(prompt, image, dur, w, h, seed, control_type, strength, wor
 
 
 @app.post("/v1/design/render")
-def api_design_render(req: DesignRenderReq):
+def api_design_render(req: DesignRenderReq, request: Request):
     """结构化生成：控制图 + 提示词（ComfyUI + Qwen-Image-2.1 Fun ControlNet）"""
-    ok, _ = _key_valid(req.apikey)
-    if not ok:
-        raise HTTPException(401, "apikey 无效或已禁用")
+    if not _api_authed(req.apikey, request):
+        raise HTTPException(401, "需要 API Key（网页登录状态可直接调用）")
     if not req.control_image:
         raise HTTPException(400, "需要 control_image（base64）")
     w, h = _parse_size(req.size)
@@ -1500,11 +1508,10 @@ class ClayReq(BaseModel):
 
 
 @app.post("/v1/design/clay2render")
-def api_clay2render(req: ClayReq):
+def api_clay2render(req: ClayReq, request: Request):
     """白模 → 效果图（预设提示词模板，raw 控制）"""
-    ok, _ = _key_valid(req.apikey)
-    if not ok:
-        raise HTTPException(401, "apikey 无效或已禁用")
+    if not _api_authed(req.apikey, request):
+        raise HTTPException(401, "需要 API Key（网页登录状态可直接调用）")
     prompt = req.prompt or (
         f"以输入的白模渲染图为结构参考，生成{req.style}。"
         f"材质：{req.materials}；光照：{req.lighting}。"
@@ -1525,11 +1532,10 @@ class SketchReq(BaseModel):
 
 
 @app.post("/v1/design/sketch2render")
-def api_sketch2render(req: SketchReq):
+def api_sketch2render(req: SketchReq, request: Request):
     """线稿 / SU 截图 → 效果图（lineart 控制）"""
-    ok, _ = _key_valid(req.apikey)
-    if not ok:
-        raise HTTPException(401, "apikey 无效或已禁用")
+    if not _api_authed(req.apikey, request):
+        raise HTTPException(401, "需要 API Key（网页登录状态可直接调用）")
     prompt = req.prompt or (
         f"以输入线稿为结构参考，生成{req.style}。"
         "保持建筑轮廓、体块关系与构图不变，补充合理的材质、光影与环境。")
@@ -1550,11 +1556,10 @@ class BatchReq(BaseModel):
 
 
 @app.post("/v1/design/batch")
-def api_design_batch(req: BatchReq):
+def api_design_batch(req: BatchReq, request: Request):
     """批量方案：同一提示词多 seed 出图（n ≤ 4）"""
-    ok, _ = _key_valid(req.apikey)
-    if not ok:
-        raise HTTPException(401, "apikey 无效或已禁用")
+    if not _api_authed(req.apikey, request):
+        raise HTTPException(401, "需要 API Key（网页登录状态可直接调用）")
     n = max(1, min(int(req.n), 4))
     w, h = _parse_size(req.size)
     out = []
@@ -1702,10 +1707,38 @@ def admin_users(request: Request):
              "is_admin": bool(r[3]), "source": r[4], "synced_at": r[5]} for r in rows]
 
 
+PROTECTED_USERS = {"grigs"}
+
+
+@app.delete("/api/admin/users/{uid}")
+def admin_del_user(uid: str, request: Request):
+    _require_admin(request)
+    conn = db()
+    row = conn.execute("SELECT username FROM users WHERE id=?", (uid,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "用户不存在")
+    if (row[0] or "") in PROTECTED_USERS:
+        conn.close()
+        raise HTTPException(403, "该用户受保护，不可删除")
+    conn.execute("DELETE FROM users WHERE id=?", (uid,))
+    conn.commit()
+    conn.close()
+    _audit((request.session.get("user") or {}).get("username", "admin"), "user.delete", {"uid": uid})
+    return {"ok": True}
+
+
 @app.post("/api/admin/users/{uid}")
 def admin_set_user(uid: str, req: UserAdminReq, request: Request):
     _require_admin(request)
     conn = db()
+    row = conn.execute("SELECT username FROM users WHERE id=?", (uid,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "用户不存在（需先登录过一次）")
+    if (row[0] or "") in PROTECTED_USERS:
+        conn.close()
+        raise HTTPException(403, "该用户受保护，不可修改")
     cur = conn.execute("UPDATE users SET is_admin=?, updated_at=? WHERE id=?",
                        (1 if req.is_admin else 0, time.time(), uid))
     conn.commit()

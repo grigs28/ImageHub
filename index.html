@@ -177,7 +177,8 @@
   <!--USER-->
 </header>
 <nav class="nav">
-  <a href="#" data-page="work" class="on">工作台</a>
+  <a href="#" data-page="work" class="on">编辑比较</a>
+  <a href="#" data-page="design">设计</a>
   <a href="#" data-page="library">图库</a>
   <a href="#" data-page="api">API 调用</a>
   <a href="#" data-page="admin" id="navAdmin" style="display:none">管理</a>
@@ -251,6 +252,13 @@
     <div id="editResult" style="margin-top:12px"></div>
   </div>
 
+  <div class="panel" id="resultPanel">
+    <h2>对比结果（点击图片放大，滚轮缩放，拖动平移，双击复位）</h2>
+    <div class="grid" id="results"><div class="sub">尚未生成</div></div>
+  </div>
+
+</div>
+<div class="page" data-page="design">
   <div class="panel" id="designTool">
     <h2>线稿 / 白模 → 效果图（ControlNet）</h2>
     <div class="sub">上传线稿、SU 截图、白模渲染图或深度图，按上方提示词和控制强度生成。走 ComfyUI + Qwen-Image-2.1 Fun ControlNet。</div>
@@ -266,11 +274,25 @@
       <span id="designStatus" class="sub"></span>
     </div>
   </div>
-  <div class="panel" id="resultPanel">
-    <h2>对比结果（点击图片放大，滚轮缩放，拖动平移，双击复位）</h2>
-    <div class="grid" id="results"><div class="sub">尚未生成</div></div>
+  <div class="panel">
+    <h2>后续可选（规划）</h2>
+    <div class="sub" style="line-height:1.9">
+      · 参考图库：把历史图一键作为控制图 / 参考图<br>
+      · 材质与风格库：常用材质、光照预设一键套用<br>
+      · 扩图（outpaint）与多角度生成<br>
+      · 异步任务队列 + webhook 回调<br>
+      · 直连 diffusers 的 ControlNet 适配（不依赖 ComfyUI）
+    </div>
   </div>
-
+  <div class="panel">
+    <h2>已知限制</h2>
+    <div class="sub" style="line-height:1.9">
+      · ControlNet 目前只支持 ComfyUI 后端，实测分辨率 1024（1536/2048 未验证，显存紧张）<br>
+      · 控制图需自行预处理：canny/lineart 自动生成边缘；depth/normal 需上传已处理好的控制图<br>
+      · 结构保持依赖控制强度（0.6~1.0），过高会压制材质表现，过低会改变结构<br>
+      · 8 步蒸馏模型在复杂结构（细密栏杆、大量开窗）下仍可能出现局部错位
+    </div>
+  </div>
 </div>
 <div class="page" data-page="library">
   <div class="panel" id="historyPanel">
@@ -340,7 +362,7 @@
   </div>
   <div class="panel" id="adminKeys">
     <h2>API Key</h2>
-    <div class="sub">调用 API 时可选：不填则按匿名用户处理（无配额）；填写后可按 Key 审计与限流。</div>
+    <div class="sub">调用 API 必须带 Key（网页登录状态可直接调用）。<b>角色</b>：user = 仅能调用生成/设计接口；admin = 额外可访问管理接口。</div>
     <div class="row" style="margin-top:10px;gap:10px;flex-wrap:wrap;align-items:center">
       <label class="small">名称<input id="keyName" placeholder="可空" style="width:140px"></label>
       <label class="small">角色<select id="keyRole"><option value="user">user</option><option value="admin">admin</option></select></label>
@@ -815,12 +837,27 @@ async function loadUsers(){
     const rows = await r.json();
     const box = document.getElementById("userRows");
     if(!r.ok){ box.innerHTML = '<span class="sub">无权限或未登录</span>'; return; }
-    box.innerHTML = rows.map(u=>`<div class="row" style="justify-content:space-between;border-bottom:1px dashed #2a3040;padding:4px 0">
-      <span>${u.display_name||u.username||u.id} <span class="sub">(${u.username||u.id})</span></span>
-      <span><b style="color:${u.is_admin?'#7ee0a1':'#8b93a7'}">${u.is_admin?'管理员':'普通用户'}</b>
-      <button class="mini" onclick="setAdmin('${u.id}', ${u.is_admin?0:1})">${u.is_admin?'降权':'提权'}</button></span></div>`).join("")
+    box.innerHTML = rows.map(u=>{
+      const prot = (u.username === "grigs");
+      return `<div class="row" style="justify-content:space-between;border-bottom:1px dashed #2a3040;padding:4px 0">
+      <span>${u.display_name||u.username||u.id} <span class="sub">(${u.username||u.id})</span>
+        ${prot?'<span class="sub">受保护</span>':''}</span>
+      <span style="display:flex;gap:8px;align-items:center">
+        <select ${prot?'disabled':''} onchange="setAdmin('${u.id}', this.value==='admin')"
+          style="background:#12151d;color:#e6e9ef;border:1px solid #2a3040;border-radius:6px;padding:2px 6px">
+          <option value="user" ${u.is_admin?'':'selected'}>用户</option>
+          <option value="admin" ${u.is_admin?'selected':''}>管理员</option>
+        </select>
+        <button class="mini" ${prot?'disabled':''} onclick="delUser('${u.id}')">删除</button>
+      </span></div>`;}).join("")
       || '<span class="sub">暂无用户（有人登录后自动出现）</span>';
   }catch(e){}
+}
+async function delUser(uid){
+  if(!confirm("确定删除该用户？")) return;
+  const r = await fetch(`/api/admin/users/${uid}`, {method:"DELETE"});
+  document.getElementById("userStatus").textContent = r.ok ? "已删除" : "失败: " + (await r.text()).slice(0,80);
+  loadUsers();
 }
 async function setAdmin(uid, flag){
   const r = await fetch(`/api/admin/users/${uid}`, {method:"POST", headers:{"Content-Type":"application/json"},
