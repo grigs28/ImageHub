@@ -744,6 +744,15 @@ def _sdcpp_generate(port, prompt, w, h, seed, timeout=1800):
 
 
 _comfy_lock = threading.Lock()
+_comfy_state = {"model": None}
+
+
+def _comfy_prepare(model_key):
+    """仅在切换底座模型时卸载；同模型（含 ControlNet patch）直接复用"""
+    if _comfy_state["model"] != model_key:
+        logger.info(f"ComfyUI 切换底座模型 {_comfy_state['model']} -> {model_key}，卸载后重载")
+        comfy_free()
+        _comfy_state["model"] = model_key
 
 
 def _req_backend(backend=None, legacy=None):
@@ -768,6 +777,7 @@ def _stop_comfy():
     """直连模式下停掉 ComfyUI，避免显存冲突"""
     if not _comfy_running():
         return
+    _comfy_state["model"] = None
     try:
         subprocess.run(["systemctl", "stop", "comfyui-h3"], capture_output=True, timeout=60)
     except Exception:
@@ -788,7 +798,7 @@ def _run_comfy(model_key, prompt, w, h, seed):
         _save_state(None)
         if not ensure_comfy():
             return {"model": model_key, "status": "error", "error": "ComfyUI 未就绪", "duration": 0}
-        comfy_free()
+        _comfy_prepare(model_key)
         builder = WF_BUILDERS.get(model_key)
         if not builder:
             return {"model": model_key, "status": "error",
@@ -1458,9 +1468,18 @@ def _design_generate(prompt, control_b64, control_type, strength, w, h, seed,
     if not _comfy_lock.acquire(timeout=600):
         raise HTTPException(503, "图像服务繁忙（队列已满），请稍后重试")
     try:
+        # 设计走 ComfyUI：先停掉直连服务，避免两边抢 GPU2/3 显存
+        for k in SERVICES:
+            try:
+                stop_service(k)
+            except Exception:
+                pass
+        with _cond:
+            _state["loaded"] = None
+        _save_state(None)
         if not ensure_comfy():
             raise HTTPException(503, "ComfyUI 未就绪（ControlNet 目前依赖 ComfyUI 后端）")
-        comfy_free()
+        _comfy_prepare("qwen")
         wf = wf_qwen_cn(name, control_type, strength, prompt, w, h,
                         seed if seed is not None else 42, mask_name)
         ok, imgs, err, dur = _submit_wait(wf, timeout=1800)
