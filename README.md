@@ -5,6 +5,19 @@
 
 ![version](https://img.shields.io/badge/version-1.4.0-blue)
 
+## 鉴权（外部调用必须带 Key）
+
+- 请求体 `"apikey": "ih-..."` 或请求头 `Authorization: Bearer ih-...`
+- 无 Key 返回 401；网页登录状态可直接调用
+- Key 在「管理 → API Key」生成/查看/复制（只存哈希 + 明文供管理员查看）
+
+## GPU 归属（2026-11-21 调整）
+
+| 服务 | GPU |
+|---|---|
+| Qwen3.6 vLLM（5563） | GPU2/3 |
+| ComfyUI（5568）与直连图像服务 | GPU0/1 |
+
 ## 1.5.0 主要更新（设计版）
 
 > 全功能压测记录见 [`docs/ImageHub全功能压测记录.md`](docs/ImageHub全功能压测记录.md)；
@@ -23,6 +36,8 @@
   - `POST /v1/design/async`（异步排队 + 可选 webhook 回调）
   - `POST /v1/design/outpaint`（四边扩图，+expand 像素）
   - `GET /v1/design/presets`（材质/光照/风格/视角预设，含管理页自定义项）
+  - `GET /thumb/{file}?w=N`（服务端缩略图，约 7KB/张）
+  - `GET /api/history?limit=&offset=`（分页，响应头 X-Total-Count）
   - `POST /v1/design/preprocess`（自动深度图 / 法线图，CPU 推理约 3 秒）
   - `POST /api/admin/presets` · `DELETE /api/admin/presets/{id}`（自定义预设管理）
   - 实测：ControlNet 1024 约 25s、1536 约 39s、2048 约 69s

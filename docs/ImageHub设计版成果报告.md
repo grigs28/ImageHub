@@ -134,3 +134,26 @@ modelscope download --model depth-anything/Depth-Anything-V2-Small-hf \
 - 独立项目：`/opt/vLLM/ImageHub/`（app.py、index.html、services/、README）
 - 主要提交：`c8a2d41`（设计版）、`50c6663`（预设/深度/webhook）、`48ddcbf`（同模型不卸载）、`732c7a9`（按需弹窗）
 - 版本号：`1.5.0`
+
+---
+
+## 8. 后续迭代（2026-11-21）
+
+在初版报告之后完成的内容：
+
+| 项 | 说明 |
+|---|---|
+| API Key 强制 | 外部调用必须带 Key（Bearer 或 `apikey`），网页会话豁免；401 提示明确 |
+| 用户权限界面 | 下拉选择「用户/管理员」、删除按钮、grigs 受保护 |
+| 设计预设管理 | 管理页可增删材质/光照/风格/视角，`/v1/design/presets` 合并返回 |
+| 自动深度/法线图 | `/v1/design/preprocess`，Depth-Anything-V2，CPU 约 3 秒 |
+| 异步 + webhook | `/v1/design/async`，回调端到端验证通过 |
+| 多角度 / 批量 / 扩图 | `/views`、`/batch`、`/outpaint`，UI 均有入口 |
+| 图库增强 | 20 条/页分页、服务端缩略图（约 7KB/张）、「→控制图」「→参考图」 |
+| 浮窗进度 | 对比按模型、设计/编辑按阶段显示状态与计时 |
+| GPU 归属调整 | 3.6→GPU2/3，图像→GPU0/1；zimage 改 balanced 双卡 |
+| 修复 | 对比任务未入库（jobs 加列后 SQL 未更新）、编辑缺 bf16 文本编码器、历史缩略图卡顿 |
+| 全功能压测 | 16 项功能在 3.6 四并发满载下全部通过（见 `ImageHub全功能压测记录.md`） |
+
+**仍未完成**：直连 diffusers 的 ControlNet——diffusers 官方（main）没有 Qwen-Image-2.1 的 ControlNet 实现，
+2.1 的 Fun ControlNet 仅以 ComfyUI model patch 形式发布；要直连需自行移植（1~2 天）。
