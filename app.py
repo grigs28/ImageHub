@@ -1293,8 +1293,10 @@ def api_job(job_id: str):
         conn.close()
         if not row:
             raise HTTPException(404, "job not found")
+        status = row[5] if len(row) > 5 and row[5] else "done"
         return {"id": row[0], "prompt": row[1], "models": json.loads(row[2]),
-                "created": row[3], "results": json.loads(row[4]), "status": "done"}
+                "created": row[3], "results": json.loads(row[4]),
+                "status": status, "project": row[6] if len(row) > 6 else None}
     return j
 
 
@@ -1589,6 +1591,175 @@ def _parse_size(size):
 @app.get("/v1/jobs/{jid}")
 def v1_job(jid: str):
     return api_job(jid)
+
+
+# ==================== 设计预设 / 多角度 / 异步 ====================
+DESIGN_PRESETS = {
+    "materials": ["清水混凝土", "超白玻璃", "玻璃幕墙", "红砖", "木格栅", "铝板",
+                  "石材", "白色涂料", "穿孔金属", "陶土板"],
+    "lighting": ["清晨柔光", "正午硬光", "黄昏暖光", "夜景灯光", "阴天散射",
+                 "雨后反光", "室内暖光"],
+    "styles": ["写实建筑摄影", "建筑竞赛效果图", "水彩手绘", "轴测图",
+               "室内表现图", "极简插画"],
+    "views": ["人视", "鸟瞰", "正立面", "左侧", "右侧", "室内"],
+}
+
+
+@app.get("/v1/design/presets")
+def api_design_presets(request: Request, apikey: Optional[str] = None):
+    if not _api_authed(apikey, request):
+        raise HTTPException(401, "需要 API Key")
+    return DESIGN_PRESETS
+
+
+class ViewsReq(BaseModel):
+    image: str
+    base_prompt: str = "现代简约建筑，清水混凝土与超白玻璃"
+    views: List[str] = ["人视", "鸟瞰"]
+    size: str = "1024x1024"
+    seed: Optional[int] = 42
+    strength: float = 0.9
+    apikey: Optional[str] = None
+    project: Optional[str] = None
+
+
+@app.post("/v1/design/views")
+def api_design_views(req: ViewsReq, request: Request):
+    """多角度：同一参考图，按视角批量生成（最多 4 个视角）"""
+    if not _api_authed(req.apikey, request):
+        raise HTTPException(401, "需要 API Key")
+    views = [v for v in req.views if v in DESIGN_PRESETS["views"]][:4] or ["人视"]
+    w, h = _parse_size(req.size)
+    out = []
+    t0 = time.time()
+    for i, v in enumerate(views):
+        prompt = (f"{req.base_prompt}。视角：{v}。保持建筑体量、材质与整体风格一致，"
+                  "只改变观察角度，输出写实效果图。")
+        image, dur = _design_generate(prompt, req.image, "raw", req.strength,
+                                      w, h, (req.seed or 42) + i)
+        out.append(_design_response(prompt, image, dur, w, h, (req.seed or 42) + i,
+                                    "raw", req.strength, f"views-{v}", project=req.project))
+    return {"created": int(time.time()), "count": len(out), "views": views,
+            "jobs": out, "total_s": round(time.time() - t0, 1)}
+
+
+# ---- 异步任务队列（单 worker，webhook 可选）----
+_dq = {"queue": [], "running": False, "lock": threading.Lock()}
+
+
+def _dq_worker():
+    while True:
+        with _dq["lock"]:
+            if not _dq["queue"]:
+                _dq["running"] = False
+                return
+            item = _dq["queue"].pop(0)
+        jid, payload, callback = item
+        logger.info(f"异步任务开始 {jid}")
+        try:
+            w, h = _parse_size(payload.get("size", "1024x1024"))
+            image, dur = _design_generate(payload["prompt"], payload["control_image"],
+                                          payload.get("control_type", "raw"),
+                                          float(payload.get("control_strength", 0.9)),
+                                          w, h, payload.get("seed"),
+                                          payload.get("mask_image"))
+            conn = db()
+            conn.execute("UPDATE jobs SET status='done', results=? WHERE id=?",
+                         (json.dumps([{"model": "qwen", "status": "ok", "image": image,
+                                       "duration": dur, "size": f"{w}x{h}",
+                                       "seed": payload.get("seed"),
+                                       "workflow": payload.get("workflow", "async")}]),
+                          jid))
+            conn.commit()
+            conn.close()
+            logger.info(f"异步任务完成 {jid} -> {image}")
+            if callback:
+                try:
+                    http_post(callback, {"job_id": jid, "status": "done",
+                                         "url": f"/image/{image}", "duration_s": dur},
+                              timeout=10)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"异步任务失败 {jid}: {e}")
+            conn = db()
+            conn.execute("UPDATE jobs SET status='error', results=? WHERE id=?",
+                         (json.dumps([{"model": "qwen", "status": "error",
+                                       "error": str(e)[:300]}]), jid))
+            conn.commit()
+            conn.close()
+
+
+class AsyncReq(DesignRenderReq):
+    callback_url: Optional[str] = None
+
+
+@app.post("/v1/design/async")
+def api_design_async(req: AsyncReq, request: Request):
+    """异步提交：立即返回 job_id，后台排队执行；可选 callback_url 回调"""
+    if not _api_authed(req.apikey, request):
+        raise HTTPException(401, "需要 API Key")
+    if not req.control_image:
+        raise HTTPException(400, "需要 control_image（base64）")
+    jid = uuid.uuid4().hex[:12]
+    conn = db()
+    conn.execute("INSERT OR REPLACE INTO jobs(id,prompt,models,created,results,status,project) "
+                 "VALUES (?,?,?,?,?,?,?)",
+                 (jid, req.prompt, json.dumps(["qwen"]), time.time(), "[]",
+                  "queued", req.project))
+    conn.commit()
+    conn.close()
+    with _dq["lock"]:
+        _dq["queue"].append((jid, req.dict(), req.callback_url))
+        start = not _dq["running"]
+        _dq["running"] = True
+    if start:
+        threading.Thread(target=_dq_worker, daemon=True).start()
+    return {"ok": True, "job_id": jid, "status": "queued",
+            "queue_len": len(_dq["queue"])}
+
+
+class OutpaintReq(BaseModel):
+    image: str
+    prompt: str = ""
+    expand: int = 256          # 每边扩展像素（16 的倍数）
+    seed: Optional[int] = 42
+    strength: float = 1.0
+    apikey: Optional[str] = None
+    project: Optional[str] = None
+
+
+@app.post("/v1/design/outpaint")
+def api_design_outpaint(req: OutpaintReq, request: Request):
+    """扩图：四边扩展并重新生成边缘内容（蒙版=新增区域）"""
+    if not _api_authed(req.apikey, request):
+        raise HTTPException(401, "需要 API Key")
+    import io as _io
+    from PIL import Image as _Img, ImageDraw as _Draw
+    raw = (req.image or "").split(",")[-1]
+    try:
+        im = _Img.open(_io.BytesIO(base64.b64decode(raw))).convert("RGB")
+    except Exception:
+        raise HTTPException(400, "image base64 解析失败")
+    e = max(16, min(int(req.expand) // 16 * 16, 512))
+    W, H = im.width + 2 * e, im.height + 2 * e
+    if W > 2048 or H > 2048:
+        raise HTTPException(400, f"扩图后尺寸 {W}x{H} 超过 2048 上限")
+    canvas = _Img.new("RGB", (W, H))
+    # 边缘拉伸填充，避免纯色边界
+    canvas.paste(im.resize((W, H)), (0, 0))
+    canvas.paste(im, (e, e))
+    mask = _Img.new("L", (W, H), 0)
+    _Draw.Draw(mask).rectangle([0, 0, W, H], fill=255)
+    _Draw.Draw(mask).rectangle([e, e, e + im.width, e + im.height], fill=0)
+    def _b64(img):
+        buf = _io.BytesIO(); img.save(buf, "PNG")
+        return base64.b64encode(buf.getvalue()).decode()
+    prompt = req.prompt or "延续原图的建筑风格、材质与光影，自然补全扩展区域"
+    image, dur = _design_generate(prompt, _b64(canvas), "raw", req.strength,
+                                  W, H, req.seed, _b64(mask.convert("RGB")))
+    return _design_response(prompt, image, dur, W, H, req.seed, "raw",
+                            req.strength, "outpaint", project=req.project)
 
 
 class SettingsReq(BaseModel):

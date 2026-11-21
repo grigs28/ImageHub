@@ -271,7 +271,16 @@
         <option value="raw">raw 原图直用</option></select></label>
       <label class="small">控制强度<input type="number" id="ctrlStrength" value="0.8" min="0" max="1" step="0.05" style="width:70px"></label>
       <button class="mini" id="designBtn" onclick="runDesign()">生成效果图</button>
+      <button class="mini" onclick="runViews()">多角度（2 个视角）</button>
+      <button class="mini" onclick="runOutpaint()">扩图 +256</button>
+      <label class="small"><input type="checkbox" id="designAsync"> 异步</label>
       <span id="designStatus" class="sub"></span>
+    </div>
+    <div class="row" style="margin-top:8px;gap:12px;flex-wrap:wrap;align-items:center">
+      <label class="small">材质预设<select id="presetMat" onchange="applyPreset('mat')"><option value="">—</option></select></label>
+      <label class="small">光照预设<select id="presetLight" onchange="applyPreset('light')"><option value="">—</option></select></label>
+      <label class="small">风格预设<select id="presetStyle" onchange="applyPreset('style')"><option value="">—</option></select></label>
+      <span id="ctrlFrom" class="sub">控制图：未选择（也可从图库点「→控制图」）</span>
     </div>
   </div>
   <div class="panel">
@@ -287,8 +296,8 @@
   <div class="panel">
     <h2>已知限制</h2>
     <div class="sub" style="line-height:1.9">
-      · ControlNet 目前只支持 ComfyUI 后端，实测分辨率 1024（1536/2048 未验证，显存紧张）<br>
-      · 控制图需自行预处理：canny/lineart 自动生成边缘；depth/normal 需上传已处理好的控制图<br>
+      · ControlNet 目前只支持 ComfyUI 后端；实测 1024 约 25s、1536 约 39s、2048 约 69s<br>
+      · 控制图预处理：canny/lineart 自动生成边缘；depth/normal 目前需自行上传已处理好的图<br>
       · 结构保持依赖控制强度（0.6~1.0），过高会压制材质表现，过低会改变结构<br>
       · 8 步蒸馏模型在复杂结构（细密栏杆、大量开窗）下仍可能出现局部错位
     </div>
@@ -630,7 +639,8 @@ async function loadHistory(){
       return `<div class="hthumb">
         <img src="/image/${im.image}" title="${LABEL[im.model]||im.model} · ${meta}"
              onclick="event.stopPropagation();openLightbox('/image/${im.image}','${LABEL[im.model]||im.model}','${meta}')">
-        <span class="hmeta">${meta}</span></div>`;
+        <span class="hmeta">${meta}</span>
+        <button class="mini" style="font-size:10px;padding:1px 6px" onclick="event.stopPropagation();useAsControl('/image/${im.image}')">→控制图</button></div>`;
     }).join("");
     return `<div class="histitem" onclick="showJob('${h.id}')">
       <div class="row1"><label class="cb" onclick="event.stopPropagation()">
@@ -1113,10 +1123,82 @@ fetch("/api/version").then(r=>r.json()).then(d=>{
   if(f) f.textContent = "v" + d.version + " (" + d.build + ")";
 }).catch(()=>{});
 
+let CTRL_B64 = "";
+
+async function loadPresets(){
+  try{
+    const d = await (await fetch("/v1/design/presets")).json();
+    const fill=(id,arr)=>{ const el=document.getElementById(id);
+      el.innerHTML='<option value="">—</option>'+arr.map(x=>`<option>${x}</option>`).join(""); };
+    fill("presetMat", d.materials||[]); fill("presetLight", d.lighting||[]); fill("presetStyle", d.styles||[]);
+  }catch(e){}
+}
+function applyPreset(kind){
+  const map={mat:["presetMat","材质："],light:["presetLight","光照："],style:["presetStyle","风格："]};
+  const [id,label]=map[kind];
+  const v=document.getElementById(id).value;
+  if(!v) return;
+  const ta=document.getElementById("prompt");
+  ta.value=(ta.value?ta.value.replace(/\s*$/,"")+"；":"")+label+v;
+}
+
+async function useAsControl(url){
+  const r=await fetch(url); const blob=await r.blob();
+  const b64=await new Promise(res=>{const fr=new FileReader();fr.onload=()=>res(String(fr.result).split(",")[1]);fr.readAsDataURL(blob);});
+  CTRL_B64=b64;
+  document.getElementById("ctrlFrom").textContent="控制图：来自图库 ✓";
+  switchPage("design");
+  document.getElementById("designStatus").textContent="已设为控制图，可直接生成";
+}
+
+async function runOutpaint(){
+  const st=document.getElementById("designStatus");
+  const f=document.getElementById("ctrlFile").files[0];
+  let img=CTRL_B64;
+  if(f){ img=await new Promise(res=>{const fr=new FileReader();fr.onload=()=>res(String(fr.result).split(",")[1]);fr.readAsDataURL(f);}); }
+  if(!img){ st.textContent="请先选择控制图或从图库导入"; return; }
+  st.textContent="扩图中（约 60 秒）…";
+  try{
+    const r=await fetch("/v1/design/outpaint",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({image:img, prompt:document.getElementById("prompt").value.trim(), expand:256, seed:42, project:CUR_PROJECT})});
+    const d=await r.json();
+    if(!r.ok){ st.textContent="失败: "+JSON.stringify(d).slice(0,200); return; }
+    st.textContent=`完成 ${d.size}`;
+    const image=(d.url||"").split("/").pop();
+    render({models:["qwen"], status:"done",
+      results:[{model:"qwen", status:"ok", image, seed:d.seed, duration:d.duration_s, size:d.size}]});
+    document.getElementById("resultPanel").scrollIntoView({behavior:"smooth"});
+    loadHistory();
+  }catch(e){ st.textContent="失败: "+e; }
+}
+
+async function runViews(){
+  const prompt=document.getElementById("prompt").value.trim();
+  const st=document.getElementById("designStatus");
+  if(!CTRL_B64 && !document.getElementById("ctrlFile").files[0]){ st.textContent="请先选择控制图或从图库导入"; return; }
+  let img=CTRL_B64;
+  const f=document.getElementById("ctrlFile").files[0];
+  if(f){ img=await new Promise(res=>{const fr=new FileReader();fr.onload=()=>res(String(fr.result).split(",")[1]);fr.readAsDataURL(f);}); }
+  st.textContent="多角度生成中（约 50 秒）…";
+  try{
+    const r=await fetch("/v1/design/views",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({image:img, base_prompt:prompt||"现代简约建筑效果图",
+        views:["人视","鸟瞰"], size:"1024x1024", seed:42, strength:0.9, project:CUR_PROJECT})});
+    const d=await r.json();
+    if(!r.ok){ st.textContent="失败: "+JSON.stringify(d).slice(0,200); return; }
+    st.textContent=`完成 ${d.count} 个视角`;
+    render({models: d.views.map((v,i)=>`qwen-${v}`), status:"done",
+      results: d.jobs.map((j,i)=>({model:`qwen-${d.views[i]}`, status:"ok",
+        image:(j.url||"").split("/").pop(), seed:j.seed, duration:j.duration_s, size:j.size}))});
+    document.getElementById("resultPanel").scrollIntoView({behavior:"smooth"});
+    loadHistory();
+  }catch(e){ st.textContent="失败: "+e; }
+}
+
 async function runDesign(){
   const f = document.getElementById("ctrlFile").files[0];
   const st = document.getElementById("designStatus");
-  if(!f){ st.textContent = "请先选择控制图"; return; }
+  if(!f && !CTRL_B64){ st.textContent = "请先选择控制图（或从图库导入）"; return; }
   const prompt = document.getElementById("prompt").value.trim();
   if(!prompt){ st.textContent = "请先在上方输入提示词"; return; }
   const wv = document.getElementById("width").value;
@@ -1125,15 +1207,23 @@ async function runDesign(){
   const seedEl = document.getElementById("seed").value;
   const btn = document.getElementById("designBtn");
   btn.disabled = true; st.textContent = "读取图片…";
-  const b64 = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result).split(",")[1]); r.onerror=rej; r.readAsDataURL(f); });
+  const b64 = f ? await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result).split(",")[1]); r.onerror=rej; r.readAsDataURL(f); }) : CTRL_B64;
   st.textContent = "生成中（ControlNet 首次约 60 秒）…";
   try{
-    const r = await fetch("/v1/design/render", {method:"POST", headers:{"Content-Type":"application/json"},
+    const isAsync = document.getElementById("designAsync").checked;
+    const r = await fetch(isAsync ? "/v1/design/async" : "/v1/design/render", {method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({prompt, control_image: b64,
         control_type: document.getElementById("ctrlType").value,
         control_strength: parseFloat(document.getElementById("ctrlStrength").value)||0.8,
         size: `${w}x${h}`, seed: seedEl?parseInt(seedEl):42,
         model: "qwen", backend: CURRENT_BACKEND, project: CUR_PROJECT})});
+    if(isAsync){
+      if(r.ok){
+        st.textContent = "已排队，任务完成可在图库查看";
+        loadHistory();
+        return;
+      }
+    }
     const d = await r.json();
     if(!r.ok){ st.textContent = "失败: " + JSON.stringify(d).slice(0,200); return; }
     st.textContent = `完成 ${d.duration_s}s`;
@@ -1179,6 +1269,7 @@ loadSettings();
 refreshStress36();
 loadProjects();
 loadAudit();
+loadPresets();
 loadUsers();
 loadKeys();
 // 定时刷新历史（其他客户端/API 生成的图也能自动出现）

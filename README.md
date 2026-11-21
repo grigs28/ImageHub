@@ -15,6 +15,11 @@
   - `POST /v1/design/clay2render`（白模 → 效果图）
   - `POST /v1/design/sketch2render`（线稿/SU 截图 → 效果图）
   - `POST /v1/design/batch`（同提示词多 seed，n ≤ 4）
+  - `POST /v1/design/views`（多角度：人视/鸟瞰/立面等，最多 4 个）
+  - `POST /v1/design/async`（异步排队 + 可选 webhook 回调）
+  - `POST /v1/design/outpaint`（四边扩图，+expand 像素）
+  - `GET /v1/design/presets`（材质/光照/风格/视角预设）
+  - 实测：ControlNet 1024 约 25s、1536 约 39s、2048 约 69s
   - `GET /v1/jobs/{id}`（任务查询）
 - **多工作流注册表**：同一模型可按功能选不同工作流（qwen: t2i / controlnet）
 - **项目与审计**：项目选择器、项目内任务查询、管理页审计日志
