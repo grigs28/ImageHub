@@ -1333,9 +1333,15 @@ def api_launch(req: LaunchReq):
     return {"status": "launching", "model": req.model, "size": f"{ww}x{wh}"}
 
 
+_gpu_cache = {"t": 0, "data": None}
+
+
 @app.get("/api/gpu")
 def api_gpu():
     import subprocess
+    now = time.time()
+    if _gpu_cache["data"] is not None and now - _gpu_cache["t"] < 2:
+        return _gpu_cache["data"]
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=index,memory.used,memory.total,power.draw,power.limit,temperature.gpu", "--format=csv,noheader,nounits"],
@@ -1347,6 +1353,8 @@ def api_gpu():
                 rows.append({"index": int(parts[0]), "used": int(parts[1]), "total": int(parts[2]),
                              "power_draw": int(float(parts[3])), "power_limit": int(float(parts[4])),
                              "temp": int(parts[5])})
+        _gpu_cache["t"] = now
+        _gpu_cache["data"] = rows
         return rows
     except Exception:
         return []

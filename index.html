@@ -1420,6 +1420,7 @@ function fpFail(msg){
 }
 function fpHide(){ if(_fpTimer){ clearInterval(_fpTimer); _fpTimer=null; } document.getElementById("fp").style.display="none"; }
 
+const _pageLoaded = new Set();
 function switchPage(name){
   if(name==="admin"){
     const n = document.getElementById("navAdmin");
@@ -1429,6 +1430,16 @@ function switchPage(name){
   document.querySelectorAll(".page").forEach(p=>p.classList.toggle("active", p.dataset.page===name));
   document.querySelectorAll(".nav a[data-page]").forEach(a=>a.classList.toggle("on", a.dataset.page===name));
   window.scrollTo({top:0});
+  if(!_pageLoaded.has(name)){
+    _pageLoaded.add(name);
+    if(name === "admin"){
+      loadUsers(); loadKeys(); loadAudit(); loadAdminPresets(); refreshStress36();
+    }else if(name === "design"){
+      loadPresets();
+    }else if(name === "library"){
+      loadHistory();
+    }
+  }
 }
 document.querySelectorAll(".nav a[data-page]").forEach(a=>{
   a.onclick = (e)=>{ e.preventDefault(); switchPage(a.dataset.page); };
@@ -1449,25 +1460,21 @@ document.querySelectorAll(".nav a[data-page]").forEach(a=>{
 loadModels();
 loadHistory();
 loadSettings();
-refreshStress36();
 loadProjects();
-loadAudit();
-loadPresets();
-loadAdminPresets();
-loadUsers();
-loadKeys();
 // 定时刷新历史（其他客户端/API 生成的图也能自动出现）
-setInterval(()=>{ if(HIST_PAGE === 0) loadHistory(); }, 20000);
-setInterval(refreshStatus, 5000);
+function pollWhenVisible(fn, ms){
+  setInterval(()=>{ if(!document.hidden) fn(); }, ms);
+}
+pollWhenVisible(()=>{ if(HIST_PAGE === 0) loadHistory(); }, 20000);
+pollWhenVisible(refreshStatus, 5000);
 loadPower();
 fetch("/api/edit/model").then(r=>r.json()).then(d=>{
   const el = document.getElementById("editReady");
   if(el) el.textContent = d.ready ? "" : "⚠ 编辑模型权重下载中，暂不可用";
   if(!d.ready){ const b=document.getElementById("editGo"); if(b){ b.disabled = true; } }
 }).catch(()=>{});
-setInterval(refreshStatus, 2000);
 refreshGpu();
-setInterval(refreshGpu, 5000);
+pollWhenVisible(refreshGpu, 5000);
 </script>
 </body>
 </html>
