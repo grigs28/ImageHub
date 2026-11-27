@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 import wave
+from unittest import mock
 
 from tts_service import audio
 
@@ -49,6 +50,47 @@ class AudioTests(unittest.TestCase):
             f.write(b"\0" * (20 * 1024 * 1024 + 1))
         with self.assertRaises(ValueError):
             audio.convert_to_wav(src, os.path.join(d, "out.wav"))
+
+    def test_convert_hardens_ffmpeg(self):
+        d = tempfile.mkdtemp()
+        src = os.path.join(d, "in.bin")
+        dst = os.path.join(d, "out.wav")
+        with open(src, "wb") as f:
+            f.write(b"not really audio")
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append({"cmd": cmd, "kwargs": kwargs})
+            make_wav(cmd[-1], 1.0, 24000, 1)
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(audio, "_probe_audio", return_value=("wav", 1.0)), \
+                mock.patch.object(audio.subprocess, "run", side_effect=fake_run):
+            audio.convert_to_wav(src, dst)
+
+        cmd = calls[0]["cmd"]
+        self.assertIn("-nostdin", cmd)
+        self.assertIn("-protocol_whitelist", cmd)
+        self.assertIn("file", cmd)
+        self.assertIn("-t", cmd)
+
+    def test_validate_rejects_playlist_format(self):
+        d = tempfile.mkdtemp()
+        src = os.path.join(d, "in.wav")
+        with open(src, "wb") as f:
+            f.write(b"ffconcat version 1.0\nfile '/etc/passwd'\n")
+        with mock.patch.object(audio, "_probe_audio", return_value=("ffconcat", 1.0)):
+            with self.assertRaises(ValueError):
+                audio.validate_ref_audio(src)
+
+    def test_validate_rejects_long_probed_audio(self):
+        d = tempfile.mkdtemp()
+        src = os.path.join(d, "in.mp3")
+        with open(src, "wb") as f:
+            f.write(b"tiny")
+        with mock.patch.object(audio, "_probe_audio", return_value=("mp3", 61.0)):
+            with self.assertRaises(ValueError):
+                audio.validate_ref_audio(src)
 
 
 if __name__ == "__main__":

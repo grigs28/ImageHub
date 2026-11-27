@@ -721,6 +721,28 @@ def _tts_history_audio(filename):
     return path if os.path.isfile(path) else None
 
 
+_MULTIPART_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_MULTIPART_ALLOWED_TYPES = {
+    "audio/wav", "audio/x-wav", "audio/wave", "audio/mpeg", "audio/mp3",
+    "audio/mp4", "audio/x-m4a", "audio/aac", "audio/flac", "audio/x-flac",
+    "audio/ogg", "audio/opus", "audio/webm", "audio/amr", "audio/x-ms-wma",
+    "application/octet-stream",
+}
+
+
+def _safe_multipart_filename(name):
+    """只保留基础名与安全字符，阻止 CRLF/引号注入与路径穿越。"""
+    base = os.path.basename((name or "").replace("\\", "/"))
+    base = base.replace("\r", "").replace("\n", "").replace('"', "")
+    base = _MULTIPART_FILENAME_RE.sub("_", base).strip("._")
+    return (base or "file")[:120]
+
+
+def _safe_multipart_ctype(ctype):
+    c = (ctype or "").split(";")[0].strip().lower()
+    return c if c in _MULTIPART_ALLOWED_TYPES else "application/octet-stream"
+
+
 def _multipart_encode(fields, files):
     """构造 multipart/form-data，避免给 BFF 增加新依赖。"""
     boundary = "----imagehub" + uuid.uuid4().hex
@@ -730,8 +752,8 @@ def _multipart_encode(fields, files):
                     f"name=\"{key}\"\r\n\r\n{value}\r\n").encode())
     for key, (filename, data, ctype) in files.items():
         out.append((f"--{boundary}\r\nContent-Disposition: form-data; "
-                    f"name=\"{key}\"; filename=\"{filename}\"\r\n"
-                    f"Content-Type: {ctype}\r\n\r\n").encode())
+                    f"name=\"{key}\"; filename=\"{_safe_multipart_filename(filename)}\"\r\n"
+                    f"Content-Type: {_safe_multipart_ctype(ctype)}\r\n\r\n").encode())
         out.append(data + b"\r\n")
     out.append(f"--{boundary}--\r\n".encode())
     return b"".join(out), f"multipart/form-data; boundary={boundary}"
@@ -1557,7 +1579,7 @@ def _api_key_user(request):
         conn.close()
     except Exception:
         return None
-    if not row:
+    if not row or not row[2]:
         return None
     return {"name": row[0], "role": row[1], "is_admin": row[1] == "admin"}
 

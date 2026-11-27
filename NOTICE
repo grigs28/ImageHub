@@ -3,6 +3,8 @@ ImageHub
 变更记录：
 2026-11-28  文档：新增《小说改编动态漫_平台与合规分析》（可行性研究，非软件变更）。
 2026-11-28  v1.7.3  TTS 自动轮播只播放勾选的语音；未勾选时飘窗提示“请先选择要轮播的语音”。
+2026-11-28  v1.7.3 安全加固：TTS 参考音频增加 ffmpeg 协议白名单、容器白名单、
+时长/大小硬限制；multipart 文件名与 Content-Type 清洗；禁用 API Key 不再通过 Bearer 鉴权。
 2026-11-28  v1.7.2  Nemotron 改用标准 W4A8 文件（int8dense 的 fast 路径在
 ComfyUI 0.46/comfy_kitchen 0.2.41 下会出绿噪声；W4A8 fast 路径实测正常）。
 2026-11-27  v1.7.1  TTS 排队计数修正：服务 ready 时以 TTS 服务端 active/pending 为准，

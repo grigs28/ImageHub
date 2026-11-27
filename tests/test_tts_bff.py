@@ -133,6 +133,30 @@ class TTSBFFTests(unittest.TestCase):
         self.assertEqual(self.server.last_path, "/api/tts/clone")
         self.assertIn(b'name="ref_audio"', self.server.last_body)
 
+    def test_disabled_bearer_key_rejected_on_tts(self):
+        conn = imagehub.db()
+        conn.execute("DELETE FROM api_keys WHERE name='tts-disabled'")
+        conn.execute("INSERT INTO api_keys(name,key_hash,role,enabled,created) "
+                     "VALUES(?,?,?,?,?)",
+                     ("tts-disabled", imagehub._hash_key("disabled-key"),
+                      "user", 0, time.time()))
+        conn.commit()
+        conn.close()
+        r = self.c.post("/v1/audio/speech",
+                        headers={"Authorization": "Bearer disabled-key"},
+                        json={"input": "你好", "voice": "Vivian"})
+        self.assertEqual(r.status_code, 401)
+
+    def test_multipart_sanitizes_filename_and_content_type(self):
+        body, _ = imagehub._multipart_encode(
+            {},
+            {"ref_audio": ('../../x"\r\nX-Evil: 1.wav', b"data",
+                           "text/html\r\nX-Evil: 1")})
+        self.assertNotIn(b"\r\nX-Evil:", body)
+        self.assertNotIn(b"Content-Type: text/html", body)
+        self.assertNotIn(b"../", body)
+        self.assertIn(b"Content-Type: application/octet-stream", body)
+
     def test_load_unload_calls_start_stop(self):
         old = {k: getattr(imagehub, k) for k in
                ("_tts_authed", "_tts_start", "_tts_stop", "_tts_json",

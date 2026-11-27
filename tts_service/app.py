@@ -2,6 +2,7 @@
 import argparse
 import logging
 import os
+import re
 import tempfile
 import threading
 
@@ -143,7 +144,9 @@ def create_app(engine: BaseEngine) -> FastAPI:
         if not xv and not (ref_text or "").strip():
             raise HTTPException(400, "克隆需要 ref_text，或启用 x_vector_only_mode")
 
-        suffix = os.path.splitext(ref_audio.filename or "ref.wav")[1] or ".wav"
+        suffix = os.path.splitext(ref_audio.filename or "ref.wav")[1].lower()
+        if not re.fullmatch(r"\.[a-z0-9]{1,8}", suffix):
+            suffix = ".wav"
         fd, path = tempfile.mkstemp(prefix="imagehub-tts-ref-", suffix=suffix)
         converted = path + ".wav"
         try:
