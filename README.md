@@ -3,7 +3,7 @@
 > 统一文生图 / 图片编辑平台：一个网页 + 一套 OpenAI 兼容 API，统一调度多个开源图像模型。
 > 支持两条执行后端：**直连 diffusers 服务**（推荐）或 **ComfyUI**；ImageHub 负责后端切换、模型驻留调度、并发排队、历史记录与鉴权。
 
-![version](https://img.shields.io/badge/version-1.4.0-blue)
+![version](https://img.shields.io/badge/version-1.5.1-blue)
 
 ## 鉴权（外部调用必须带 Key）
 
@@ -70,6 +70,87 @@ modelscope download --model depth-anything/Depth-Anything-V2-Small-hf \
 `POST /v1/design/preprocess {"image": "...", "type": "depth"}` 返回深度图；`type=normal` 返回法线图。
 CPU 推理，不占显存。
 
+## 1.5.1 图库性能
+
+- 历史列表增量更新：数据未变不重渲染，新增任务只插新行，保留滚动位置
+- 图库页可见时才轮询，首次点击不再重复加载
+- 生成完成后后台预生成 160/480/1024 缩略图
+- 灯箱先加载 1024 预览，原图按需加载；编辑仍使用原图
+- 历史查询改只读连接；建表/迁移只执行一次；`jobs(created)` 加索引
+- 对比任务保留首次 `created`，运行中不再跳到历史最前
+
+## 1.7.3 TTS 轮播只播勾选项
+
+- 「自动轮播」只播放当前勾选的语音，不再默认播放整页
+- 未勾选时点击会飘窗提示「请先选择要轮播的语音」，不会启动
+
+## 1.7.2 Nemotron 改用标准 W4A8
+
+- int8dense 文件在 ComfyUI 0.46 + comfy_kitchen 0.2.41 的 fast 路径下会输出绿色噪声，已弃用
+- 改用节点默认的 `nemotron_labs_image_30b_a3b_w4a8.safetensors`（22.7GB），fast 路径实测 3090 约 45s/1024²（含加载）
+- `MODELS["nemotron"].needs` 和 `wf_nemotron` 均已切换到 W4A8
+
+## 1.7.1 TTS 排队计数修正
+
+- `/api/tts/status` 在 TTS 服务 ready 时直接使用服务端的 `active/pending`，不再把“已受理”算成排队
+- BFF 本地计数只在加载三个模型、等待图像任务等切换阶段使用
+- 生成中只显示“正在生成 N 个”，没有真实等待时不再出现“排队中 1 个”
+
+## 1.7.0 生成对比新增 FLUX.2 Klein 与 Nemotron
+
+- 新模型 `flux2klein`（FLUX.2 Klein 4B，4 步）和 `nemotron`（Nemotron-Labs-Image-30B-A3B，W4A8）
+- 仅走 ComfyUI；`MODELS`/`WF_BUILDERS`/`MODEL_WORKFLOWS`/`MODEL_ALIASES` 已接入，`_run_model_impl` 强制 comfy
+- 前端模型卡自动出现，可直接在「生成对比」里勾选；`/v1/images/generations` 和 `/api/compare` 均支持
+- 权重路径见 §2.7；Nemotron 需要主权重 21.6GB + tokenizer 1.24GB
+
+## 1.6.6 API 说明下载
+
+- API 页右上角新增「下载 API 说明」，对应 `GET /api/docs`，返回完整 Markdown 文档
+- 文档覆盖文生图、图片编辑、多模型对比、TTS 三类接口、语音记录、apikey/Bearer/会话鉴权、HTTPS 证书和错误码
+- 文件下载名为 `ImageHub-API.md`
+
+## 1.6.5 TTS apikey 与图像 API 一致
+
+- `POST /v1/audio/speech`、`POST /api/tts/speak` 请求体支持 `apikey`
+- `POST /api/tts/clone` 表单支持 `apikey`
+- `GET /api/tts/history`、`GET /api/tts/audio/{file}`、`DELETE /api/tts/history/{id}` 支持 `?apikey=`
+- 批量删除/打包下载请求体支持 `apikey`；仍支持 `Authorization: Bearer` 和网页会话
+
+## 1.6.4 必要信息飘窗化
+
+- 模型列表、项目、设置、功耗、Key、用户、审计等加载失败 → 右下角红色飘窗
+- 预热加载、生成/对比/编辑失败、历史删除/清空、设置保存、Key/项目创建、功耗设置、TTS 加载/释放 → 成功/失败飘窗
+- 破坏性操作（删除、清空、模型切换风险）仍保留 `confirm`；轮询类失败不反复刷屏
+
+## 1.6.3 顶部模型状态与生成飘窗
+
+- 顶部导航右侧常驻两个状态标签：`图像 …`（已加载/生成中/切换中/未加载）和 `TTS …`（已加载/生成中/加载中/排队/未加载），所有 tab 可见
+- 点「生成语音」自动加载 TTS；加载三个模型、等待图像任务、排队或合成中时，右下角飘窗实时提示；完成/失败有对应提示
+- `/api/tts/status` 合并 BFF 本地加载/排队状态，`loading/error/pending` 不再只依赖 TTS 子服务
+
+## 1.6.2 TTS 记录下载与轮播
+
+- 每条生成记录增加「下载」；选中 1 条直接下载 WAV，选中多条打包 ZIP（`POST /api/tts/history/batch-download`）
+- 「自动轮播」按当前页或选中记录顺序自动播放：当前行高亮、滚动到可视区、播放结束自动下一条；离开 TTS 页自动停止
+- 单文件下载仍走 `GET /api/tts/audio/{file}`，多文件 ZIP 内含按时间/变体命名的 `.wav`
+
+## 1.6.1 TTS 语音库与 API 文档
+
+- TTS 页新增「生成记录」列表：播放、多选、单条/批量删除、生成时间、音频时长、生成用时、大小
+- 语音库独立于图像图库：单独 `tts_audio` 表 + `output/tts/` 目录，不写 `jobs`；接口 `GET/DELETE /api/tts/history`、`POST /api/tts/history/batch-delete`、`GET /api/tts/audio/{file}`
+- API 调用页重做：文生图 / 图片编辑 / 多模型对比 / TTS 语音 / 语音记录 / 鉴权与证书，每块带 curl 示例和参数表
+- API 页顶部显示当前访问地址（IP + 端口），示例自动替换为当前地址，换机器/端口不用改文档
+- 右上角「证书」按钮：下载 `imagehub.crt` + Windows/Linux/macOS/Firefox 安装步骤
+
+## 1.6.0 TTS 与 HTTPS
+
+- 新增 **TTS tab**：Qwen3-TTS 1.7B 三个变体（CustomVoice / VoiceDesign / Base 克隆）同时加载
+- 原生 Web UI（不使用 Gradio）：自定义音色、声音设计、声音克隆；支持文件上传和 HTTPS 下麦克风录音
+- 独立 TTS 服务 `tts_service/`：`127.0.0.1:5570`，独立 conda 环境 `qwen-tts`
+- **图像与 TTS 不共存**：图像请求先停整个 TTS 服务（三个模型），TTS 请求先停图像；双方忙则 FIFO 排队
+- TTS 输出只在 Web UI/API 返回，不进历史、不写 SQLite、不生成缩略图
+- ImageHub 默认 `https://<IP>:5569`（自签证书）；`YZ_LOGIN_URL` 仍指向 yz-login 的 HTTP 地址，SSO 代码不需要改
+
 ## 1.4.0 主要更新
 
 - **双后端可切换**：`直连 diffusers`（每模型一个独立 FastAPI 服务，`services/` 目录）与 `ComfyUI`，可在页面底部切换并保存到 `settings.json`
@@ -91,7 +172,8 @@ CPU 推理，不占显存。
 - **图片编辑**：上传新图或直接选用历史图，用自然语言指令修改
 - **OpenAI 兼容 API**：`POST /v1/images/generations`，可直接用 OpenAI SDK
 - **双卡分组件**：DiT 与文本编码器分置两张显卡，24GB 卡也能跑大模型
-- **运维友好**：GPU 功耗上限控制（网页可调）、功耗/温度日志（重启溯源）、SSO 接入（yz-login）、systemd 服务化
+- **TTS**：Qwen3-TTS 1.7B 三变体（自定义音色 / 声音设计 / 声音克隆），与图像模型互斥排队
+- **运维友好**：GPU 功耗上限控制（网页可调）、功耗/温度日志（重启溯源）、SSO 接入（yz-login）、systemd 服务化、HTTPS
 
 ---
 
@@ -101,15 +183,17 @@ CPU 推理，不占显存。
 浏览器 / 程序 (HTTP)
         │
         ▼
-  ImageHub BFF (FastAPI :5569)
+  ImageHub BFF (FastAPI :5569, HTTPS)
   ├─ 模型驻留管理器（同模型并行 / 跨模型排队）
   ├─ 工作流模板（每个模型一套）
   ├─ 历史记录（SQLite）+ 图片代理
   ├─ OpenAI 兼容 API
+  ├─ TTS 反代 + GPU 资源仲裁（图像 ↔ TTS 互斥）
   └─ SSO 回调（可选）
         │  ComfyUI HTTP API (/prompt /history /free)
         ▼
   ComfyUI (:5568)  ── MultiGPU 加载器 ──►  GPU0/1/2/3
+  TTS 服务 (:5570) ── Qwen3-TTS 1.7B × 3 ──►  GPU0/1
         │
         └─ 模型权重（GGUF / safetensors）
 ```
@@ -125,9 +209,21 @@ CPU 推理，不占显存。
 | `qwen_uc` | Qwen-Image-2.1-Turbo（无限制） | 同上 + abliterated 编码器 | 1024×1024 | 双卡 | 同画质，限制更少 |
 | `zimage` | Z-Image-Turbo | 6B DiT（8 步） | 1024×1024 | 双卡 | 速度最快 |
 | `moss` | MOSS-Image-SFT | 5B DiT（25 步） | 1024×1024 | 双卡 | 布局/海报专精 |
+| `flux2klein` | FLUX.2 Klein 4B | 4B（4 步） | 1024×1024 | 单卡 | 速度最快，英文/写实强（ComfyUI） |
+| `nemotron` | Nemotron-Labs-Image-30B-A3B | 30B/3B W4A8 | 1024×1024 | 单卡 | 自回归，写实/长提示词强（ComfyUI） |
 | — | Qwen-Image-Edit-2511 | 20B DiT（40 步） | 1024×1024 | 双卡 | 图片编辑（`/api/edit`） |
 
 > 显存参考（24GB×2，实测峰值）：H3 约 34G、Qwen 约 38G、MOSS 约 28G、Z-Image 约 19G。
+
+### TTS（Qwen3-TTS 1.7B）
+
+| 变体 | 用途 | 说明 |
+|------|------|------|
+| CustomVoice | 自定义音色 | 9 个预设音色 + 可选语气指令 |
+| VoiceDesign | 声音设计 | 用自然语言描述音色 |
+| Base | 声音克隆 | 参考音频 + 可选参考文本 |
+
+三个 1.7B 模型同时常驻：CustomVoice + VoiceDesign 在 GPU0，Base 在 GPU1；与图像模型不共存。
 
 ---
 
@@ -141,6 +237,9 @@ CPU 推理，不占显存。
 | 内存 | ≥ 64GB（建议 128GB） |
 | 磁盘 | ≥ 300GB（模型权重） |
 | 引擎 | ComfyUI ≥ 0.46 + 自定义节点（GGUF / MultiGPU） |
+| TTS 引擎 | `qwen-tts==0.1.1` + 独立 conda 环境 `/opt/conda3/envs/qwen-tts` |
+| 音频工具 | `ffmpeg`（参考音频转 24kHz 单声道 WAV） |
+| 证书 | 自签证书 `/etc/imagehub/tls/imagehub.crt|key`（HTTPS） |
 
 > ⚠️ **3090（sm_86）不支持 convrot 系列量化**（int8_convrot / w4a8），加载会触发 `CUDA illegal memory access`。请使用 **GGUF** 或 **bf16** 权重。
 
@@ -281,24 +380,73 @@ ln -sf /opt/models/Comfy-Org/Qwen-Image_ComfyUI/split_files/text_encoders/qwen_2
 ln -sf /opt/models/Comfy-Org/Wan2.1/split_files/vae/wan_2.1_vae.safetensors ComfyUI/models/vae/
 ```
 
+#### 2.6 Qwen3-TTS 1.7B（TTS tab）
+
+```bash
+# 独立环境（官方包要求 transformers==4.57.3，与 imagegen 的版本冲突）
+/usr/bin/python3 -m venv /opt/conda3/envs/qwen-tts
+/opt/conda3/envs/qwen-tts/bin/pip install --upgrade pip
+/opt/conda3/envs/qwen-tts/bin/pip install torch torchaudio
+/opt/conda3/envs/qwen-tts/bin/pip install qwen-tts==0.1.1
+
+# 三个 1.7B 变体（每个约 4.5GB，含自带 speech_tokenizer）
+export HF_HUB_DISABLE_XET=1
+HF=/opt/conda3/envs/imagegen/bin/hf
+D=/opt/models/Qwen3-TTS
+$HF download Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice --local-dir $D/CustomVoice
+$HF download Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign --local-dir $D/VoiceDesign
+$HF download Qwen/Qwen3-TTS-12Hz-1.7B-Base        --local-dir $D/Base
+```
+
+> 系统需要 `ffmpeg`（openEuler：`dnf install -y sox ffmpeg`）。
+
+#### 2.7 FLUX.2 Klein 4B / Nemotron-30B-A3B（ComfyUI）
+
+- FLUX：`/opt/ComfyUI/models/diffusion_models/flux-2-klein-4b-fp8.safetensors`（3.8GB）；文本编码器 `qwen_3_4b`、VAE `flux2-vae` 复用现有软链
+- Nemotron：主权重 `models/diffusion_models/nemotron-image/nemotron_labs_image_30b_a3b_w4a8_int8dense.safetensors`（21.6GB）+ pixel decoder `models/vae/nemotron-image/nemotron_labs_image_tokenizer_bf16.safetensors`（1.24GB）
+- 节点：`ComfyUI-Nemotron-Image`（commit `8f0d8e2`）；下载后需重启 ComfyUI，decoder 才会出现在下拉框
+
+```bash
+hf download PedroMarinhoDev/Nemotron-Labs-Image-ComfyUI \
+  nemotron_labs_image_30b_a3b_w4a8_int8dense.safetensors \
+  --local-dir /opt/ComfyUI/models/diffusion_models/nemotron-image
+hf download PedroMarinhoDev/Nemotron-Labs-Image-ComfyUI \
+  nemotron_labs_image_tokenizer_bf16.safetensors \
+  --local-dir /opt/ComfyUI/models/vae/nemotron-image
+```
+
+> 两个模型只走 ComfyUI，不支持直连后端；在「生成对比」里选中即可。
+
 ### 3. 部署 ImageHub
 
 ```bash
 mkdir -p /opt/vLLM/imagehub
-cp app.py index.html run.py /opt/vLLM/imagehub/
+cp app.py index.html run.py tlsutil.py /opt/vLLM/imagehub/
+cp -r tts_service /opt/vLLM/imagehub/
 pip install -r requirements.txt
 
 # 环境变量（可选，SSO 与数据库注册用；不配也能跑）
 cp .env.example /opt/vLLM/imagehub/.env
 chmod 600 /opt/vLLM/imagehub/.env
 # 编辑 .env 填入 YZ_APP_ID / YZ_APP_SECRET / SESSION_SECRET
+
+# HTTPS 自签证书（SAN 包含 192.168.0.70 和 127.0.0.1）
+mkdir -p /etc/imagehub/tls && chmod 700 /etc/imagehub/tls
+openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+  -keyout /etc/imagehub/tls/imagehub.key \
+  -out /etc/imagehub/tls/imagehub.crt \
+  -subj "/CN=192.168.0.70" \
+  -addext "subjectAltName=IP:192.168.0.70,IP:127.0.0.1"
+chmod 600 /etc/imagehub/tls/imagehub.key
 ```
+
+> 页面右上角「证书」按钮可下载 `imagehub.crt` 并查看 Windows/Linux/macOS/Firefox 安装步骤；脚本也可直接 `GET /api/tls/cert`。只分发 `.crt`，不要分发 `.key`。
 
 手动启动测试：
 
 ```bash
 cd /opt/vLLM/imagehub && python run.py
-# 浏览器打开 http://<服务器IP>:5569
+# 浏览器打开 https://<服务器IP>:5569（首次需接受自签证书）
 ```
 
 ### 4. systemd 服务
@@ -333,9 +481,11 @@ systemctl enable --now gpu-power-cap gpu-power-logger
 
 ### 文生图（OpenAI 兼容）
 
+> 5569 默认 HTTPS（自签证书）。命令行用 `--cacert /etc/imagehub/tls/imagehub.crt`；浏览器首次访问需接受证书。
 
 ```bash
-curl -X POST http://<IP>:5569/v1/images/generations \
+curl --cacert /etc/imagehub/tls/imagehub.crt \
+  -X POST https://<IP>:5569/v1/images/generations \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen","prompt":"赛博朋克城市夜景","size":"1024x1024","seed":42,"backend":"direct","response_format":"url"}'
 ```
@@ -360,13 +510,38 @@ Python（OpenAI SDK）：
 
 ```python
 from openai import OpenAI
-import base64
+import base64, httpx
 
-client = OpenAI(base_url="http://<IP>:5569/v1", api_key="none")
+client = OpenAI(
+    base_url="https://<IP>:5569/v1", api_key="none",
+    # 自签证书：让 httpx 信任证书文件；已导入客户端信任库时可省略
+    http_client=httpx.Client(verify="/etc/imagehub/tls/imagehub.crt"),
+)
 r = client.images.generate(model="qwen", prompt="水彩橘猫", size="1024x1024",
                            response_format="b64_json")
 open("out.png","wb").write(base64.b64decode(r.data[0].b64_json))
 ```
+
+### 语音合成（TTS）
+
+```bash
+curl -X POST https://<IP>:5569/v1/audio/speech \
+  -H "Authorization: Bearer ih-..." \
+  -H "Content-Type: application/json" \
+  -d '{"input":"你好，欢迎使用 ImageHub。","voice":"Vivian","language":"Chinese","response_format":"wav"}' \
+  -o out.wav
+```
+
+| 接口 | 说明 |
+|------|------|
+| `POST /v1/audio/speech` | OpenAI 兼容，映射 CustomVoice；`input`、`voice`、`language`、`response_format=wav` |
+| `POST /api/tts/speak` | Web UI 用；`variant=custom|design`、`text`、`language`、`speaker`、`instruct` |
+| `POST /api/tts/clone` | multipart：`ref_audio`、`text`、`language`、`ref_text?`、`x_vector_only_mode?` |
+| `GET /api/tts/status` | TTS 状态（`loading/ready/error`、active/pending、图像侧状态） |
+| `GET /api/tts/voices` | 预设音色和支持语言 |
+| `POST /api/tts/load` · `POST /api/tts/unload` | 手动加载/释放三个模型 |
+
+> TTS 鉴权与图像 API 一致：POST 用请求体/表单 `apikey`，GET 用 `?apikey=`；也支持 `Authorization: Bearer` 和网页登录会话。输出只在 HTTP 响应里返回，不写历史、不进图库。首次加载三个模型约 30~120 秒。
 
 ### 其他接口
 
@@ -392,6 +567,9 @@ open("out.png","wb").write(base64.b64decode(r.data[0].b64_json))
 | 请求不同模型 | 等当前生成结束 → 卸载 → 加载新模型（+20~40s） |
 | 同模型并发 | 并行排队 |
 | 跨模型并发 | 排队，不打断进行中的任务 |
+| 图像请求时 TTS 已加载 | 停整个 TTS 服务（三个模型）后再加载图像 |
+| TTS 请求时图像已加载 | 停直连服务 / ComfyUI 后再加载 TTS |
+| 图像与 TTS 同时请求 | 按到达顺序 FIFO 排队，不共存 |
 | 空闲 | 不自动卸载 |
 
 ---
@@ -400,9 +578,11 @@ open("out.png","wb").write(base64.b64decode(r.data[0].b64_json))
 
 ```
 imagehub/
-├── app.py                  # BFF 主程序（工作流、调度、API、SSO、历史）
+├── app.py                  # BFF 主程序（工作流、调度、API、SSO、历史、TTS 仲裁）
 ├── index.html              # 前端单页
 ├── run.py                  # 启动包装（数据库注册 + uvicorn）
+├── tlsutil.py              # uvicorn TLS 参数
+├── tts_service/            # TTS 服务（FastAPI + Qwen3-TTS 三变体）
 ├── requirements.txt
 ├── .env.example            # 环境变量模板
 ├── imagehub.service        # systemd 单元（:5569）
@@ -423,6 +603,9 @@ imagehub/
 | 显存不足 | 模型互斥，确保切换前 `/free`；或降低 `max-model-len` / 使用量化权重 |
 | 机器满载时重启 | 检查电源功率与 12V 分路；先 `nvidia-smi -pl 250` 降压，并查看 `/var/log/gpu-power.log` |
 | 页面显示"准备中" | 对应模型权重未下载完成，接口会返回 503 |
+| 浏览器提示证书不受信任 | 自签证书，首次点「继续访问」；也可把 `/etc/imagehub/tls/imagehub.crt` 导入客户端信任 |
+| TTS 显示"等待图像任务完成" | 图像与 TTS 不共存，等当前图像任务结束会自动切换 |
+| 图像任务后 TTS 变慢 | 图像请求会释放三个 TTS 模型，回到 TTS 需要重新加载（30~120s） |
 | 浏览器看到旧页面 | 服务已加 `no-store`，强制刷新 Ctrl+Shift+R |
 
 ---

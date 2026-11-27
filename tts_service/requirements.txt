@@ -1,0 +1,7 @@
+# TTS 服务独立环境（/opt/conda3/envs/qwen-tts）依赖
+# torch/torchaudio 请先按 CUDA 版本安装，例如：
+#   pip install torch torchaudio
+fastapi>=0.110
+uvicorn>=0.27
+python-multipart>=0.0.9
+qwen-tts==0.1.1

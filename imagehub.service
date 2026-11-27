@@ -8,6 +8,8 @@ Type=simple
 WorkingDirectory=/opt/vLLM/imagehub
 Environment="PATH=/opt/conda3/envs/imagegen/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="CONDA_PREFIX=/opt/conda3/envs/imagegen"
+Environment="IMAGEHUB_TLS_CERT=/etc/imagehub/tls/imagehub.crt"
+Environment="IMAGEHUB_TLS_KEY=/etc/imagehub/tls/imagehub.key"
 ExecStart=/opt/conda3/envs/imagegen/bin/python /opt/vLLM/imagehub/0_imagehub.py
 Restart=always
 RestartSec=5

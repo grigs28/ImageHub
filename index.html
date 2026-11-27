@@ -50,6 +50,20 @@
   .mini{font-size:12px;padding:4px 10px;border-radius:6px;border:1px solid var(--line);
         background:#202839;color:var(--text);cursor:pointer}
   .mini:hover{border-color:var(--accent)}
+  .tts-tab.on{border-color:var(--accent);color:var(--accent)}
+  .apitab.on{border-color:var(--accent);color:var(--accent)}
+  .modelchips{margin-left:auto;display:flex;gap:8px;align-items:center;font-size:11px;color:var(--muted)}
+  .mchip{display:inline-flex;gap:6px;align-items:center;padding:3px 9px;border:1px solid var(--line);border-radius:999px;background:var(--panel2);white-space:nowrap}
+  .mchip .dot{width:7px;height:7px;border-radius:50%;background:#6b7280}
+  .mchip.live .dot{background:#22c55e}
+  .mchip.busy .dot{background:#f59e0b;animation:chipPulse 1s infinite}
+  .mchip.err .dot{background:#ef4444}
+  @keyframes chipPulse{50%{opacity:.35}}
+  .tts-histitem.tts-playing{background:rgba(90,140,255,.10);border-left:3px solid var(--accent);padding-left:7px}
+  .api-table{width:100%;border-collapse:collapse;margin-top:10px;font-size:12px}
+  .api-table th,.api-table td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+  .api-table th{color:var(--muted);font-weight:600}
+  .api-pane h3{margin-top:18px}
   .mini.link{text-decoration:none;display:inline-block}
   .dot{width:8px;height:8px;border-radius:50%;background:#4a5468;display:inline-block;margin-right:5px}
   .dot.live{background:var(--ok);box-shadow:0 0 6px var(--ok)}
@@ -188,15 +202,18 @@
       <option value="">未分组</option></select>
     <button class="mini" onclick="newProject()">+ 项目</button>
   </span>
+  <button class="mini" id="certBtn" style="display:none" onclick="showCertHelp()">证书</button>
   <!--USER-->
 </header>
 <nav class="nav">
   <a href="#" data-page="work" class="on">编辑比较</a>
   <a href="#" data-page="design">设计</a>
   <a href="#" data-page="library">图库</a>
+  <a href="#" data-page="tts">TTS</a>
   <a href="#" data-page="api">API 调用</a>
   <a href="#" data-page="admin" id="navAdmin" style="display:none">管理</a>
   <a href="http://192.168.0.70:5568" target="_blank" rel="noopener" class="comfyLink">ComfyUI ↗</a>
+  <span id="modelChips" class="modelchips"></span>
 </nav>
 <main>
 <div class="page" data-page="work">
@@ -337,21 +354,280 @@
     </div>
   </div>
 </div>
+<div class="page" data-page="tts">
+  <div class="panel">
+    <h2>语音合成 · Qwen3-TTS 1.7B</h2>
+    <div class="sub" id="ttsStatus" style="line-height:1.8">TTS 未加载</div>
+    <div class="row" style="margin-top:10px;gap:8px;align-items:center">
+      <button class="mini" id="ttsLoadBtn" onclick="ttsLoad()">加载 TTS</button>
+      <button class="mini" id="ttsUnloadBtn" onclick="ttsUnload()">释放 TTS</button>
+      <span class="sub" id="ttsMsg"></span>
+    </div>
+
+    <div class="row" style="margin-top:14px;gap:8px">
+      <button class="mini tts-tab on" data-tts-tab="custom" onclick="switchTTSTab('custom')">自定义音色</button>
+      <button class="mini tts-tab" data-tts-tab="design" onclick="switchTTSTab('design')">声音设计</button>
+      <button class="mini tts-tab" data-tts-tab="clone" onclick="switchTTSTab('clone')">声音克隆</button>
+    </div>
+
+    <div class="tts-pane" data-tts-pane="custom">
+      <div class="row" style="margin-top:10px;gap:12px">
+        <label class="small">音色 <select id="ttsSpeaker"></select></label>
+        <label class="small">语言 <select id="ttsLangCustom"></select></label>
+      </div>
+      <label class="small" style="display:block;margin-top:10px">语气指令（可选）
+        <input id="ttsInstructCustom" placeholder="例如：温柔、平静、语速稍慢" style="width:100%">
+      </label>
+      <textarea id="ttsTextCustom" placeholder="输入要合成的文本" style="margin-top:10px"></textarea>
+    </div>
+
+    <div class="tts-pane" data-tts-pane="design" style="display:none">
+      <label class="small" style="display:block;margin-top:10px">声音描述（必填）
+        <textarea id="ttsInstructDesign" placeholder="例如：一位年轻女性的声音，温柔、清晰、语速稍慢"></textarea>
+      </label>
+      <div class="row" style="margin-top:10px">
+        <label class="small">语言 <select id="ttsLangDesign"></select></label>
+      </div>
+      <textarea id="ttsTextDesign" placeholder="输入要合成的文本" style="margin-top:10px"></textarea>
+    </div>
+
+    <div class="tts-pane" data-tts-pane="clone" style="display:none">
+      <label class="small" style="display:block;margin-top:10px">参考音频（建议 10~30 秒，wav/mp3/m4a）
+        <input type="file" id="ttsRefFile" accept="audio/*">
+      </label>
+      <button class="mini" id="ttsRecordBtn" onclick="ttsRecord()" style="display:none;margin-top:8px">录音</button>
+      <label class="small" style="display:block;margin-top:10px">参考文本（可选，填写可提升克隆质量）
+        <input id="ttsRefText" style="width:100%" placeholder="参考音频里说的内容">
+      </label>
+      <div class="row" style="margin-top:10px">
+        <label class="small">语言 <select id="ttsLangClone"></select></label>
+      </div>
+      <textarea id="ttsTextClone" placeholder="输入要合成的文本" style="margin-top:10px"></textarea>
+    </div>
+
+    <div class="row" style="margin-top:14px;gap:10px;align-items:center">
+      <button class="mini" id="ttsGo" onclick="ttsGo()">生成语音</button>
+      <span class="sub" id="ttsHint">首次使用会加载三个 1.7B 模型；图像任务运行时会先排队。</span>
+    </div>
+    <div id="ttsOut" style="margin-top:14px"></div>
+
+    <div style="margin-top:18px;border-top:1px solid var(--line);padding-top:12px">
+      <div class="row" style="align-items:center;gap:10px;flex-wrap:wrap">
+        <h3 style="margin:0">生成记录</h3>
+        <label class="cb" style="font-size:12px;display:flex;gap:5px;align-items:center">
+          <input type="checkbox" id="ttsSelAll" onchange="ttsToggleAll(this.checked)"> 全选
+        </label>
+        <button class="mini" id="ttsDeleteSel" onclick="ttsDeleteSelected()">删除选中 <span id="ttsSelCount">0</span></button>
+        <button class="mini" id="ttsDownloadSel" onclick="ttsDownloadSelected()">下载选中</button>
+        <button class="mini" id="ttsAutoBtn" onclick="ttsToggleAuto()" title="先勾选要轮播的语音">自动轮播</button>
+        <button class="mini" onclick="loadTTSHistory(0)">刷新</button>
+        <span class="sub" id="ttsHistTotal"></span>
+      </div>
+      <div id="ttsHistList" style="margin-top:10px"></div>
+      <div class="row" style="margin-top:10px;gap:10px;align-items:center">
+        <button class="mini" id="ttsHistPrev" onclick="loadTTSHistory(TTS_HIST_PAGE-1)">← 上一页</button>
+        <span class="sub" id="ttsHistPage"></span>
+        <button class="mini" id="ttsHistNext" onclick="loadTTSHistory(TTS_HIST_PAGE+1)">下一页 →</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div class="page" data-page="api">
   <div class="panel" id="api">
-    <h2>API 调用（OpenAI 兼容）</h2>
-    <div class="codebox" id="apicode">curl -X POST http://192.168.0.70:5569/v1/images/generations \
-  -H "Content-Type: application/json" \
-  -d '{"model":"qwen","prompt":"赛博朋克城市夜景","size":"1024x1024","seed":42,"backend":"direct","apikey":"","response_format":"url"}'
+    <h2>API 调用</h2>
+    <div class="sub" style="line-height:1.8">
+      当前地址 <code id="apiBase">https://192.168.0.70:5569</code>
+      <span id="apiAddrNote"></span>。外部调用需 API Key（请求体 <code>apikey</code> 或 <code>Authorization: Bearer</code>）；
+      网页登录会话可直接调用。自签证书：命令行加 <code>--cacert imagehub.crt</code>，或点右上角「证书」下载安装。
+    </div>
+    <div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+      <button class="mini apitab on" data-apitab="img" onclick="switchApiTab('img')">文生图</button>
+      <button class="mini apitab" data-apitab="edit" onclick="switchApiTab('edit')">图片编辑</button>
+      <button class="mini apitab" data-apitab="compare" onclick="switchApiTab('compare')">多模型对比</button>
+      <button class="mini apitab" data-apitab="tts" onclick="switchApiTab('tts')">TTS 语音</button>
+      <button class="mini apitab" data-apitab="ttshist" onclick="switchApiTab('ttshist')">语音记录</button>
+      <button class="mini apitab" data-apitab="auth" onclick="switchApiTab('auth')">鉴权与证书</button>
+      <a class="mini link" href="/api/docs" download="ImageHub-API.md" style="margin-left:auto">下载 API 说明</a>
+    </div>
 
-# Python (OpenAI SDK)
-# client = OpenAI(base_url="http://192.168.0.70:5569/v1", api_key="none")
-# client.images.generate(model="qwen", prompt="水彩橘猫", size="1024x1024",
-#                        response_format="b64_json")<button class="copybtn" onclick="navigator.clipboard.writeText(document.getElementById('apicode').innerText.replace('复制',''));this.textContent='已复制';setTimeout(()=>this.textContent='复制',1200)">复制</button></div>
-    <div class="sub" style="margin-top:8px">
-      可用 model：<b>qwen</b> / <b>zimage</b> / <b>moss</b>（图片编辑走 /api/edit）
-      · 参数：prompt、model、size、response_format（url|b64_json）、seed、backend（comfyui|direct，留空用全局设置）
-      · 详细说明见服务器 <code>/opt/vLLM/docs/ImageHub调用说明.md</code>
+    <div class="api-pane" data-api-pane="img">
+      <h3>POST /v1/images/generations</h3>
+      <div class="sub">OpenAI 兼容。未加载的模型自动加载，加载后常驻复用；图像与 TTS 不共存，图像请求会先释放 TTS。</div>
+      <div class="codebox" id="api-img-curl">curl --cacert imagehub.crt \
+  -X POST https://192.168.0.70:5569/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen","prompt":"赛博朋克城市夜景","size":"1024x1024","seed":42,"backend":"direct","response_format":"url","apikey":"ih-..."}'<button class="copybtn" onclick="copyCode('api-img-curl', this)">复制</button></div>
+      <table class="api-table">
+        <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+        <tr><td>prompt</td><td>string</td><td>是</td><td>提示词</td></tr>
+        <tr><td>model</td><td>string</td><td>否</td><td><code>qwen</code>（默认）/ <code>h3</code> / <code>zimage</code> / <code>moss</code> / <code>flux2klein</code> / <code>nemotron</code> / <code>auto</code></td></tr>
+        <tr><td>size</td><td>string</td><td>否</td><td><code>宽x高</code>，不传用模型默认；单边上限 2048</td></tr>
+        <tr><td>seed</td><td>int</td><td>否</td><td>随机种子，默认 42</td></tr>
+        <tr><td>response_format</td><td>string</td><td>否</td><td><code>url</code>（默认，相对路径）/ <code>b64_json</code></td></tr>
+        <tr><td>backend</td><td>string</td><td>否</td><td><code>direct</code>（直连 diffusers）/ <code>comfyui</code>；留空用全局设置</td></tr>
+        <tr><td>only_loaded</td><td>bool</td><td>否</td><td>true 时只用当前已加载模型，不触发切换</td></tr>
+        <tr><td>apikey</td><td>string</td><td>是</td><td>API Key；也可用 <code>Authorization: Bearer</code></td></tr>
+      </table>
+      <h3>响应</h3>
+      <pre class="codebox">{"created":1700000000,
+ "data":[{"url":"/image/hub_qwen_ab12cd34.png","revised_prompt":"..."}],
+ "model":"qwen","duration_s":10.2,"size":"1024x1024","job_id":"..."}</pre>
+      <div class="sub"><code>b64_json</code> 时 <code>data[0].b64_json</code> 是 base64；<code>url</code> 是相对路径，前面拼基础地址即可。</div>
+      <h3>Python（OpenAI SDK）</h3>
+      <pre class="codebox">from openai import OpenAI
+import httpx
+client = OpenAI(base_url="https://192.168.0.70:5569/v1", api_key="ih-...",
+                http_client=httpx.Client(verify="imagehub.crt"))
+r = client.images.generate(model="qwen", prompt="水彩橘猫", size="1024x1024",
+                           response_format="b64_json")</pre>
+    </div>
+
+    <div class="api-pane" data-api-pane="edit" style="display:none">
+      <h3>POST /api/edit</h3>
+      <div class="sub">上传图片 + 自然语言指令做编辑。网页登录会话可直接调用；外部建议使用带 Key 的 /v1 接口或携带 Bearer。</div>
+      <div class="codebox" id="api-edit-curl">curl --cacert imagehub.crt \
+  -X POST https://192.168.0.70:5569/api/edit \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"把背景换成夜晚的赛博朋克街道","image_b64":"data:image/png;base64,...","seed":7,"steps":20,"apikey":"ih-..."}'<button class="copybtn" onclick="copyCode('api-edit-curl', this)">复制</button></div>
+      <table class="api-table">
+        <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+        <tr><td>prompt</td><td>string</td><td>是</td><td>编辑指令</td></tr>
+        <tr><td>image_b64</td><td>string</td><td>是</td><td>图片 base64，可带 <code>data:image/png;base64,</code> 前缀</td></tr>
+        <tr><td>seed</td><td>int</td><td>否</td><td>默认 42</td></tr>
+        <tr><td>steps</td><td>int</td><td>否</td><td>推理步数，默认 20（ComfyUI 路径）</td></tr>
+      </table>
+      <h3>响应</h3>
+      <pre class="codebox">{"status":"ok","image":"hub_edit_ab12cd34.png",
+ "url":"/image/hub_edit_ab12cd34.png","duration":36.4,
+ "model":"Qwen-Image-Edit-2511"}</pre>
+    </div>
+
+    <div class="api-pane" data-api-pane="compare" style="display:none">
+      <h3>POST /api/compare → GET /api/jobs/{job_id}</h3>
+      <div class="sub">异步多模型对比：先提交拿 <code>job_id</code>，再轮询任务；每个模型独立落盘，失败不影响其它模型。</div>
+      <div class="codebox" id="api-compare-curl">curl --cacert imagehub.crt \
+  -X POST https://192.168.0.70:5569/api/compare \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"赛博朋克城市夜景","models":["qwen","zimage","moss"],"width":1024,"height":1024,"seed":42,"backend":"comfyui"}'
+# → {"job_id":"ab12cd34"}
+curl --cacert imagehub.crt https://192.168.0.70:5569/api/jobs/ab12cd34<button class="copybtn" onclick="copyCode('api-compare-curl', this)">复制</button></div>
+      <table class="api-table">
+        <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+        <tr><td>prompt</td><td>string</td><td>是</td><td>提示词</td></tr>
+        <tr><td>models</td><td>string[]</td><td>是</td><td>要对比的模型，如 <code>["qwen","zimage","moss"]</code></td></tr>
+        <tr><td>width / height</td><td>int</td><td>否</td><td>尺寸，默认用各模型默认值</td></tr>
+        <tr><td>seed</td><td>int</td><td>否</td><td>默认 42</td></tr>
+        <tr><td>backend</td><td>string</td><td>否</td><td><code>comfyui</code> / <code>direct</code>；留空用全局设置</td></tr>
+      </table>
+      <h3>任务响应</h3>
+      <pre class="codebox">{"id":"ab12cd34","status":"done","prompt":"...","models":["qwen","zimage"],
+ "results":[{"model":"qwen","status":"ok","image":"...","duration":10.2,"size":"1024x1024","seed":42}]}</pre>
+    </div>
+
+    <div class="api-pane" data-api-pane="tts" style="display:none">
+      <h3>POST /v1/audio/speech（OpenAI 兼容）</h3>
+      <div class="sub">CustomVoice 预设音色。返回 <code>audio/wav</code>（24kHz 单声道）。TTS 与图像模型不共存，首次加载三个 1.7B 约 4 秒。</div>
+      <div class="codebox" id="api-tts-curl">curl --cacert imagehub.crt \
+  -X POST https://192.168.0.70:5569/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input":"你好，欢迎使用 ImageHub。","voice":"Vivian","language":"Chinese","response_format":"wav","apikey":"ih-..."}' \
+  -o out.wav<button class="copybtn" onclick="copyCode('api-tts-curl', this)">复制</button></div>
+      <table class="api-table">
+        <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+        <tr><td>input</td><td>string</td><td>是</td><td>要合成的文本，≤2000 字</td></tr>
+        <tr><td>voice</td><td>string</td><td>否</td><td>预设音色，默认 <code>Vivian</code>；另有 Serena / Uncle_Fu / Dylan / Eric / Ryan / Aiden / Ono_Anna / Sohee</td></tr>
+        <tr><td>language</td><td>string</td><td>否</td><td><code>Auto</code>（默认）/ Chinese / English / Japanese / Korean / German / French / Russian / Portuguese / Spanish / Italian</td></tr>
+        <tr><td>response_format</td><td>string</td><td>否</td><td>只支持 <code>wav</code></td></tr>
+        <tr><td>apikey</td><td>string</td><td>是</td><td>API Key；也可用 <code>Authorization: Bearer</code></td></tr>
+      </table>
+      <h3>POST /api/tts/speak（声音设计 / 自定义音色）</h3>
+      <pre class="codebox"># 自定义音色（POST 请求体带 apikey，和图像 API 一致）
+{"variant":"custom","text":"你好","language":"Chinese","speaker":"Vivian","instruct":"温柔平静","apikey":"ih-..."}
+
+# 声音设计（instruct 必填）
+{"variant":"design","text":"你好","language":"Chinese","instruct":"一位年轻女性，温柔、清晰、语速稍慢","apikey":"ih-..."}</pre>
+      <table class="api-table">
+        <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+        <tr><td>variant</td><td>string</td><td>是</td><td><code>custom</code> / <code>design</code></td></tr>
+        <tr><td>text</td><td>string</td><td>是</td><td>要合成的文本，≤2000 字</td></tr>
+        <tr><td>language</td><td>string</td><td>否</td><td>默认 <code>Auto</code></td></tr>
+        <tr><td>speaker</td><td>string</td><td>custom 必填</td><td>预设音色名</td></tr>
+        <tr><td>instruct</td><td>string</td><td>design 必填</td><td>声音描述或语气指令</td></tr>
+      </table>
+      <h3>POST /api/tts/clone（声音克隆，multipart）</h3>
+      <pre class="codebox">curl --cacert imagehub.crt -X POST https://192.168.0.70:5569/api/tts/clone \
+  -F "apikey=ih-..." \
+  -F "text=你好，这是克隆测试" -F "language=Chinese" \
+  -F "ref_text=参考音频里说的内容" -F "ref_audio=@ref.wav" \
+  -o clone.wav</pre>
+      <table class="api-table">
+        <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+        <tr><td>ref_audio</td><td>file</td><td>是</td><td>参考音频，≤60 秒 / ≤20MB，wav/mp3/m4a</td></tr>
+        <tr><td>text</td><td>string</td><td>是</td><td>要合成的文本</td></tr>
+        <tr><td>language</td><td>string</td><td>否</td><td>默认 <code>Auto</code></td></tr>
+        <tr><td>ref_text</td><td>string</td><td>否</td><td>参考音频的文字；不填需 <code>x_vector_only_mode=true</code>，克隆质量会下降</td></tr>
+        <tr><td>x_vector_only_mode</td><td>bool</td><td>否</td><td>默认 false；true 时只用说话人向量</td></tr>
+      </table>
+      <div class="sub">所有 TTS 接口返回 <code>audio/wav</code>；成功生成会自动进入 TTS 页的「生成记录」，不写图像图库。</div>
+    </div>
+
+    <div class="api-pane" data-api-pane="ttshist" style="display:none">
+      <h3>语音记录</h3>
+      <div class="sub">TTS 专用语音库，独立于图像历史。鉴权与图像 API 一致：POST 用请求体/表单 <code>apikey</code>，GET 可用 <code>?apikey=</code>；也支持 <code>Authorization: Bearer</code>，网页会话可直接调用。</div>
+      <div class="codebox" id="api-ttshist-curl"># 列表（按时间倒序）
+curl --cacert imagehub.crt \
+  "https://192.168.0.70:5569/api/tts/history?limit=10&offset=0&apikey=ih-..."
+
+# 播放/下载某条音频
+curl --cacert imagehub.crt \
+  "https://192.168.0.70:5569/api/tts/audio/tts_ab12cd34.wav?apikey=ih-..." -o out.wav
+
+# 删除单条 / 批量删除
+curl --cacert imagehub.crt -X DELETE \
+  "https://192.168.0.70:5569/api/tts/history/记录ID?apikey=ih-..."
+curl --cacert imagehub.crt -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"ids":["id1","id2"],"apikey":"ih-..."}' \
+  https://192.168.0.70:5569/api/tts/history/batch-delete<button class="copybtn" onclick="copyCode('api-ttshist-curl', this)">复制</button></div>
+      <table class="api-table">
+        <tr><th>接口</th><th>说明</th></tr>
+        <tr><td><code>GET /api/tts/history?limit=&offset=</code></td><td>返回 <code>{"rows":[...],"total":N,"limit":10,"offset":0}</code>，limit 上限 50</td></tr>
+        <tr><td><code>GET /api/tts/audio/{file}</code></td><td>返回 <code>audio/wav</code></td></tr>
+        <tr><td><code>DELETE /api/tts/history/{id}</code></td><td>删除一条记录和音频文件</td></tr>
+        <tr><td><code>POST /api/tts/history/batch-delete</code></td><td>请求体 <code>{"ids":[...]}</code>，单次最多 200 条</td></tr>
+      </table>
+      <div class="sub">记录字段：id、created、variant、text、language、speaker、instruct、file、duration（音频时长）、elapsed（生成用时）、size。</div>
+    </div>
+
+    <div class="api-pane" data-api-pane="auth" style="display:none">
+      <h3>鉴权</h3>
+      <div class="sub">Key 在「管理 → API Key」创建；管理接口还可用 <code>X-Admin-Token</code>。</div>
+      <pre class="codebox"># 方式一：请求体（图像/TTS POST 通用）
+{"apikey":"ih-..."}
+
+# 方式二：查询参数（TTS GET，如 history/audio）
+?apikey=ih-...
+
+# 方式三：Bearer
+Authorization: Bearer ih-...
+
+# 方式四：网页登录会话（浏览器自动带 Cookie）</pre>
+      <h3>HTTPS 与自签证书</h3>
+      <div class="sub">5569 默认 HTTPS（自签证书）。命令行用 <code>--cacert</code>；客户端系统信任请在右上角「证书」下载安装。</div>
+      <pre class="codebox">curl --cacert imagehub.crt https://192.168.0.70:5569/api/version
+
+# Python
+import httpx
+client = httpx.Client(verify="imagehub.crt")</pre>
+      <table class="api-table">
+        <tr><th>状态码</th><th>含义</th></tr>
+        <tr><td>400</td><td>参数错误（尺寸超限、文本为空、参考音频超长/超大等）</td></tr>
+        <tr><td>401</td><td>缺少或无效 API Key / 未登录</td></tr>
+        <tr><td>404</td><td>记录或音频不存在</td></tr>
+        <tr><td>409</td><td>only_loaded 与当前驻留模型不一致</td></tr>
+        <tr><td>503</td><td>模型/TTS 加载中、排队超时或服务未就绪</td></tr>
+      </table>
+      <div class="sub">详细文档：服务器 <code>/opt/vLLM/docs/ImageHub调用说明.md</code>。</div>
     </div>
   </div>
 </div>
@@ -434,6 +710,10 @@
 </main>
 <footer class="foot">ImageHub <b id="appVersion2" style="color:#9fb6ff">-</b> · 引擎 直连 diffusers · 192.168.0.70:5569</footer>
 
+<div id="toast" style="display:none;position:fixed;right:24px;bottom:24px;z-index:10000;max-width:460px;padding:12px 16px;border-radius:10px;background:#161b26;border:1px solid var(--line);box-shadow:0 10px 32px rgba(0,0,0,.4);font-size:13px;line-height:1.6">
+  <span id="toastText"></span>
+</div>
+
 <div id="fp">
   <div class="fp-hd"><b id="fpTitle">进行中</b><span id="fpTime">0s</span><span id="fpClose" onclick="fpHide()">×</span></div>
   <div id="fpSteps"></div>
@@ -441,9 +721,38 @@
 <div id="lb">
   <div class="bar"><b id="lbTitle"></b><span id="lbInfo"></span>
     <button class="mini" id="lbEdit" style="font-size:11px">✎ 编辑此图</button>
+    <button class="mini" id="lbOrig" style="font-size:11px;display:none">查看原图</button>
     <span class="hint">滚轮缩放 · 拖动平移 · 双击复位 · Esc 关闭</span></div>
   <span class="close" id="lbClose">×</span>
   <img id="lbImg" alt="">
+</div>
+<div id="certModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)hideCertHelp()">
+  <div class="panel" style="max-width:760px;margin:8vh auto;max-height:78vh;overflow:auto">
+    <h2 style="margin-top:0">安装 HTTPS 证书</h2>
+    <div class="sub" style="line-height:1.8">
+      浏览器可以直接点「继续访问」，不装也能用；如果要消除警告，或给 curl/脚本调用，按下面安装。
+      只分发 <code>imagehub.crt</code>，<b>不要分发 .key</b>。
+    </div>
+    <div class="row" style="margin:14px 0;gap:10px;align-items:center">
+      <a class="mini link" href="/api/tls/cert" download="imagehub.crt">下载 imagehub.crt</a>
+      <button class="mini" onclick="hideCertHelp()">关闭</button>
+    </div>
+    <h3>Windows</h3>
+    <div class="sub">双击证书 → 安装证书 → 本地计算机 → 受信任的根证书颁发机构；或管理员 CMD：</div>
+    <pre class="codebox">certutil -addstore -f Root imagehub.crt</pre>
+    <h3>Ubuntu / Debian</h3>
+    <pre class="codebox">sudo cp imagehub.crt /usr/local/share/ca-certificates/
+sudo update-ca-certificates</pre>
+    <h3>openEuler / RHEL / CentOS</h3>
+    <pre class="codebox">sudo cp imagehub.crt /etc/pki/ca-trust/source/anchors/
+sudo update-ca-trust</pre>
+    <h3>macOS</h3>
+    <div class="sub">钥匙串访问 → 系统 → 导入 imagehub.crt → 双击 → 始终信任。</div>
+    <h3>Firefox</h3>
+    <div class="sub">设置 → 隐私与安全 → 证书 → 查看证书 → 证书颁发机构 → 导入。</div>
+    <h3>API / 脚本</h3>
+    <pre class="codebox">curl --cacert imagehub.crt https://192.168.0.70:5569/api/version</pre>
+  </div>
 </div>
 
 <script>
@@ -455,8 +764,15 @@ let selectedInit = false;
 let loadedModel = null;
 
 async function loadModels(){
-  const r = await fetch("/api/models");
-  const list = await r.json();
+  let list;
+  try{
+    const r = await fetch("/api/models");
+    if(!r.ok) throw new Error("HTTP " + r.status);
+    list = await r.json();
+  }catch(e){
+    showToast("模型列表加载失败：" + e.message, "err");
+    return;
+  }
   if(!selectedInit){ list.filter(m => m.ready !== false).forEach(m => selected.add(m.key)); selectedInit = true; }
   const box = document.getElementById("models");
   box.innerHTML = "";
@@ -480,7 +796,7 @@ async function loadModels(){
       </div>`;
     d.onclick = (e) => {
       if(m.ready === false){
-        alert("该模型权重还在下载中，暂不可用");
+        showToast("该模型权重还在下载中，暂不可用", "err");
         const cb0 = d.querySelector("input");
         cb0.checked = false;
         selected.delete(m.key);
@@ -497,15 +813,24 @@ async function loadModels(){
     btn.onclick = async (e) => {
       e.stopPropagation();
       btn.disabled = true; btn.textContent = "加载中…";
-      await fetch("/api/launch", {method:"POST", headers:{"Content-Type":"application/json"},
-                                  body: JSON.stringify({model: m.key})});
-      refreshStatus();
+      showToast(`正在加载 ${m.label}…`);
+      try{
+        const r = await fetch("/api/launch", {method:"POST", headers:{"Content-Type":"application/json"},
+                                    body: JSON.stringify({model: m.key})});
+        const d = await r.json().catch(()=>({}));
+        if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
+        showToast(`${m.label} 加载完成`, "ok");
+      }catch(err){
+        showToast(`加载失败：${err.message}`, "err");
+      }finally{
+        refreshStatus();
+      }
     };
     const gbtn = d.querySelector('[data-act="gen"]');
     gbtn.onclick = async (e) => {
       e.stopPropagation();
       const prompt = document.getElementById("prompt").value.trim();
-      if(!prompt){ alert("请先在上方输入提示词"); return; }
+      if(!prompt){ showToast("请先在上方输入提示词", "err"); return; }
       await refreshStatus();
       if(needLoad([m.key]) && !confirm(LOAD_WARN)) return;
       // 尺寸：优先用面板里的宽/高，留空则用模型默认
@@ -534,9 +859,9 @@ async function loadModels(){
           loadHistory();   // 历史立即出现，无需手动刷新
           fpDone("生成完成");
         } else {
-          alert("生成失败: " + JSON.stringify(d2).slice(0,300));
+          showToast("生成失败: " + JSON.stringify(d2).slice(0,300), "err");
         }
-      }catch(err){ alert("生成失败: " + err); fpFail(String(err)); }
+      }catch(err){ showToast("生成失败: " + err, "err"); fpFail(String(err)); }
       finally{ gbtn.disabled = false; gbtn.textContent = "生成"; refreshStatus(); }
     };
     box.appendChild(d);
@@ -588,6 +913,88 @@ async function refreshStatus(){
       else { btn.disabled = false; btn.textContent = "预热加载"; }
     }
   });
+  const cb = document.getElementById("certBtn");
+  if(cb) cb.style.display = st.tls ? "" : "none";
+}
+
+async function refreshModelChips(){
+  const box = document.getElementById("modelChips");
+  if(!box) return;
+  try{
+    const [st, tts] = await Promise.all([
+      fetch("/api/status", {cache: "no-store"}).then(r=>r.json()),
+      fetch("/api/tts/status", {cache: "no-store"}).then(r=>r.json())
+    ]);
+    const img = st && st.switching ? ["busy", "图像 切换中"]
+      : st && st.active > 0 ? ["busy", "图像 生成中" + (st.loaded ? " · " + st.loaded : "")]
+      : st && st.loaded ? ["live", "图像 " + st.loaded + " 已加载"]
+      : ["", "图像 未加载"];
+    let t;
+    if(!tts) t = ["err", "TTS 不可用"];
+    else if(tts.state === "loading") t = ["busy", "TTS 加载中"];
+    else if(tts.state === "error") t = ["err", "TTS 失败"];
+    else if(tts.state === "ready") t = [tts.active > 0 ? "busy" : "live",
+                                        tts.active > 0 ? "TTS 生成中" : "TTS 已加载"];
+    else if((tts.pending || 0) > 0) t = ["busy", "TTS 排队"];
+    else t = ["", "TTS 未加载"];
+    box.innerHTML = `<span class="mchip ${img[0]}"><span class="dot"></span>${esc(img[1])}</span>`
+                  + `<span class="mchip ${t[0]}"><span class="dot"></span>${esc(t[1])}</span>`;
+  }catch(e){
+    box.innerHTML = '<span class="mchip err"><span class="dot"></span>状态不可用</span>';
+  }
+}
+let TOAST_TIMER = null;
+function showToast(text, kind){
+  const el = document.getElementById("toast");
+  const t = document.getElementById("toastText");
+  if(!el || !t) return;
+  if(TOAST_TIMER){ clearTimeout(TOAST_TIMER); TOAST_TIMER = null; }
+  t.textContent = text;
+  el.style.display = "block";
+  el.style.borderColor = kind === "err" ? "#ef4444" : kind === "ok" ? "#22c55e" : "var(--line)";
+  if(kind === "ok") TOAST_TIMER = setTimeout(hideToast, 2500);
+  if(kind === "err") TOAST_TIMER = setTimeout(hideToast, 5000);
+}
+function hideToast(){
+  const el = document.getElementById("toast");
+  if(el) el.style.display = "none";
+}
+
+function showCertHelp(){
+  const m = document.getElementById("certModal");
+  if(m) m.style.display = "block";
+}
+function hideCertHelp(){
+  const m = document.getElementById("certModal");
+  if(m) m.style.display = "none";
+}
+function switchApiTab(name){
+  document.querySelectorAll(".apitab").forEach(b=>b.classList.toggle("on", b.dataset.apitab === name));
+  document.querySelectorAll(".api-pane").forEach(p=>{
+    p.style.display = p.dataset.apiPane === name ? "" : "none";
+  });
+}
+function copyCode(id, btn){
+  const el = document.getElementById(id);
+  if(!el) return;
+  const text = el.innerText.replace(/复制|已复制/g, "");
+  navigator.clipboard.writeText(text).then(()=>{
+    if(btn){ btn.textContent = "已复制"; setTimeout(()=>{ btn.textContent = "复制"; }, 1200); }
+  }).catch(()=>{});
+}
+function initApiBase(){
+  const origin = location.origin;
+  const host = location.hostname;
+  const port = location.port || (location.protocol === "https:" ? "443" : "80");
+  const base = document.getElementById("apiBase");
+  if(base) base.textContent = origin;
+  const note = document.getElementById("apiAddrNote");
+  if(note) note.textContent = `（IP ${host} · 端口 ${port}）`;
+  document.querySelectorAll(".api-pane .codebox").forEach(box=>{
+    if(box.innerHTML.includes("https://192.168.0.70:5569")){
+      box.innerHTML = box.innerHTML.replaceAll("https://192.168.0.70:5569", origin);
+    }
+  });
 }
 
 function badge(s){
@@ -610,7 +1017,7 @@ function render(job){
     if(r.status==="ok" && r.image){
       return `<div class="res"><div class="hd"><b>${LABEL[r.model]||r.model}</b>${badge("ok")}</div>
         <img src="/thumb/${r.image}?w=480" loading="lazy" alt="${LABEL[r.model]||r.model}"
-             onclick="openLightbox('/image/${r.image}', '${LABEL[r.model]||r.model}', '${r.duration}s · ${r.size||''}')">
+             onclick="openLightbox('/thumb/${r.image}?w=1024', '${LABEL[r.model]||r.model}', '${r.duration}s · ${r.size||''}', '/image/${r.image}')">
         <div class="ft"><span>${r.size||""}</span><span>seed ${r.seed ?? "-"}</span><span>${r.duration}s</span></div></div>`;
     }
     return `<div class="res"><div class="hd"><b>${LABEL[r.model]||r.model}</b>${badge("err")}</div>
@@ -646,8 +1053,8 @@ async function poll(id, models){
 document.getElementById("go").onclick = async () => {
   const btn = document.getElementById("go");
   const prompt = document.getElementById("prompt").value.trim();
-  if(!prompt) return alert("请输入提示词");
-  if(!selected.size) return alert("请至少选择一个模型");
+  if(!prompt) return showToast("请输入提示词", "err");
+  if(!selected.size) return showToast("请至少选择一个模型", "err");
   // 仅在需要加载/切换模型时提示（模型加载是唯一高风险窗口）
   await refreshStatus();
   if(needLoad([...selected]) && !confirm(LOAD_WARN)) return;
@@ -671,67 +1078,153 @@ document.getElementById("go").onclick = async () => {
     if(!r.ok) throw new Error(data.detail || "提交失败");
     await poll(data.job_id, [...selected]);
     document.getElementById("status").textContent = "完成";
+    showToast("对比完成", "ok");
   }catch(e){
     document.getElementById("status").textContent = "错误: " + e.message;
+    showToast("对比失败：" + e.message, "err");
   }finally{
     btn.disabled = false;
   }
 };
 
 let HIST_PAGE = 0, HIST_LIMIT = 20, HIST_TOTAL = 0;
+let CURRENT_PAGE = "work";
+let HIST_SIG = "";
+let HIST_ABORT = null;
+
+function esc(value){
+  return String(value ?? "").replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+
+function itemSig(h){
+  return JSON.stringify(h);
+}
+
+function buildHistoryItem(h){
+  const el = document.createElement("div");
+  el.className = "histitem";
+  el.dataset.id = h.id;
+  el.dataset.sig = itemSig(h);
+  el.onclick = () => showJob(h.id);
+  const d = new Date(h.created*1000).toLocaleString();
+  const thumbs = (h.images||[]).map(im=>{
+    const meta = `${im.size||"-"} · seed ${im.seed ?? "-"} · ${im.duration||0}s`;
+    const label = LABEL[im.model] || im.model;
+    return `<div class="hthumb">
+      <img src="/thumb/${im.image}?w=160" loading="lazy" decoding="async"
+           title="${esc(label)} · ${esc(meta)}"
+           onclick="event.stopPropagation();openLightbox('/thumb/${im.image}?w=1024','${esc(label)}','${esc(meta)}','/image/${im.image}')">
+      <span class="hmeta">${esc(meta)}</span>
+      <button class="mini" style="font-size:10px;padding:1px 6px" onclick="event.stopPropagation();useAsControl('/image/${im.image}')">→控制图</button>
+      <button class="mini" style="font-size:10px;padding:1px 6px" onclick="event.stopPropagation();useAsReference('/image/${im.image}')">→参考图</button></div>`;
+  }).join("");
+  el.innerHTML = `<div class="row1"><label class="cb" onclick="event.stopPropagation()">
+      <input type="checkbox" class="selbox" data-id="${h.id}"
+             ${selIds.has(h.id)?"checked":""} onchange="toggleSel('${h.id}', this.checked)"></label>
+    <span>${d}</span><span>${esc((h.models||[]).join(", "))}</span>
+    <span class="load">${h.status==="interrupted"?'<span style="color:#f5c451">⚠ 中断</span> · ':""}载入到下方 ↗</span></div>
+  <span class="copy" title="复制提示词" onclick="event.stopPropagation();copyPrompt('${h.id}')">复制提示词</span>
+  <span class="del" title="删除这条记录" onclick="event.stopPropagation();delHistory('${h.id}')">删除</span>
+  <div class="pp">${esc((h.prompt||"").slice(0,80))}</div>
+  <div class="thumbs">${thumbs || '<span class="sub">无图片</span>'}</div>`;
+  return el;
+}
+
+function renderHistoryRows(rows){
+  const box = document.getElementById("historyList");
+  if(!rows.length){
+    box.innerHTML = '<span class="sub">暂无记录</span>';
+    return;
+  }
+  const oldTop = box.scrollTop;
+  const oldHeight = box.scrollHeight;
+  let anchorId = null, anchorTop = 0;
+  if(oldTop > 0){
+    const boxRect = box.getBoundingClientRect();
+    const visible = [...box.querySelectorAll(".histitem")].find(el => {
+      return el.getBoundingClientRect().bottom > boxRect.top;
+    });
+    if(visible){
+      anchorId = visible.dataset.id;
+      anchorTop = visible.getBoundingClientRect().top - boxRect.top;
+    }
+  }
+  const existing = new Map(
+    [...box.querySelectorAll(".histitem")].map(el => [el.dataset.id, el]));
+  const frag = document.createDocumentFragment();
+  rows.forEach(h => {
+    const sig = itemSig(h);
+    let el = existing.get(h.id);
+    if(!el){
+      el = buildHistoryItem(h);
+    }else if(el.dataset.sig !== sig){
+      const next = buildHistoryItem(h);
+      el.replaceWith(next);
+      el = next;
+    }
+    existing.delete(h.id);
+    frag.appendChild(el);
+  });
+  existing.forEach(el => el.remove());
+  box.replaceChildren(frag);
+  if(oldTop > 0){
+    const anchor = anchorId
+      ? [...box.querySelectorAll(".histitem")].find(el => el.dataset.id === anchorId)
+      : null;
+    if(anchor){
+      const boxRect = box.getBoundingClientRect();
+      const newTop = anchor.getBoundingClientRect().top - boxRect.top;
+      box.scrollTop = box.scrollTop + newTop - anchorTop;
+    }else{
+      box.scrollTop = oldTop + (box.scrollHeight - oldHeight);
+    }
+  }else{
+    box.scrollTop = 0;
+  }
+}
 
 async function loadHistory(page){
   if(page !== undefined) HIST_PAGE = Math.max(0, page);
-  const r = await fetch(`/api/history?limit=${HIST_LIMIT}&offset=${HIST_PAGE*HIST_LIMIT}`);
-  HIST_TOTAL = parseInt(r.headers.get("X-Total-Count") || "0", 10);
-  const rows = await r.json();
-  const pages = Math.max(1, Math.ceil(HIST_TOTAL / HIST_LIMIT));
-  const pv = document.getElementById("histPrev"), nx = document.getElementById("histNext");
-  if(pv) pv.disabled = HIST_PAGE <= 0;
-  if(nx) nx.disabled = HIST_PAGE >= pages - 1;
-  const pg = document.getElementById("histPage");
-  if(pg) pg.textContent = `第 ${HIST_PAGE+1} / ${pages} 页`;
-  const tt = document.getElementById("histTotal");
-  if(tt) tt.textContent = `共 ${HIST_TOTAL} 条`;
-  const box = document.getElementById("historyList");
-  if(!rows.length){
-    if(HIST_PAGE > 0){ HIST_PAGE -= 1; return loadHistory(HIST_PAGE); }
-    box.innerHTML = '<span class="sub">暂无记录</span>'; return;
+  if(HIST_ABORT) HIST_ABORT.abort();
+  const ctrl = new AbortController();
+  HIST_ABORT = ctrl;
+  try{
+    const r = await fetch(
+      `/api/history?limit=${HIST_LIMIT}&offset=${HIST_PAGE*HIST_LIMIT}`,
+      {cache: "no-store", signal: ctrl.signal});
+    if(ctrl !== HIST_ABORT) return;
+    HIST_TOTAL = parseInt(r.headers.get("X-Total-Count") || "0", 10);
+    const rows = await r.json();
+    if(ctrl !== HIST_ABORT) return;
+    const pages = Math.max(1, Math.ceil(HIST_TOTAL / HIST_LIMIT));
+    const pv = document.getElementById("histPrev"), nx = document.getElementById("histNext");
+    if(pv) pv.disabled = HIST_PAGE <= 0;
+    if(nx) nx.disabled = HIST_PAGE >= pages - 1;
+    const pg = document.getElementById("histPage");
+    if(pg) pg.textContent = `第 ${HIST_PAGE+1} / ${pages} 页`;
+    const tt = document.getElementById("histTotal");
+    if(tt) tt.textContent = `共 ${HIST_TOTAL} 条`;
+
+    HIST = {};
+    rows.forEach(h=>{ HIST[h.id] = h.prompt; });
+    if(!rows.length && HIST_PAGE > 0){
+      HIST_PAGE -= 1;
+      return loadHistory(HIST_PAGE);
+    }
+    const sig = JSON.stringify(rows);
+    if(sig === HIST_SIG) return;
+    HIST_SIG = sig;
+    renderHistoryRows(rows);
+  }catch(e){
+    if(e && e.name === "AbortError") return;
+    console.error(e);
   }
-  box.style.maxHeight = "";
-  HIST = {};
-  rows.forEach(h=>{ HIST[h.id] = h.prompt; });
-  box.innerHTML = rows.map(h=>{
-    const d = new Date(h.created*1000).toLocaleString();
-    const thumbs = (h.images||[]).map(im=>{
-      const meta = `${im.size||"-"} · seed ${im.seed ?? "-"} · ${im.duration||0}s`;
-      return `<div class="hthumb">
-        <img src="/thumb/${im.image}?w=160" loading="lazy" title="${LABEL[im.model]||im.model} · ${meta}"
-             onclick="event.stopPropagation();openLightbox('/image/${im.image}','${LABEL[im.model]||im.model}','${meta}')">
-        <span class="hmeta">${meta}</span>
-        <button class="mini" style="font-size:10px;padding:1px 6px" onclick="event.stopPropagation();useAsControl('/image/${im.image}')">→控制图</button>
-        <button class="mini" style="font-size:10px;padding:1px 6px" onclick="event.stopPropagation();useAsReference('/image/${im.image}')">→参考图</button></div>`;
-    }).join("");
-    return `<div class="histitem" onclick="showJob('${h.id}')">
-      <div class="row1"><label class="cb" onclick="event.stopPropagation()">
-          <input type="checkbox" class="selbox" data-id="${h.id}"
-                 ${selIds.has(h.id)?"checked":""} onchange="toggleSel('${h.id}', this.checked)"></label>
-        <span>${d}</span><span>${h.models.join(", ")}</span>
-        <span class="load">${h.status==="interrupted"?'<span style="color:#f5c451">⚠ 中断</span> · ':""}载入到下方 ↗</span></div>
-      <span class="copy" title="复制提示词" onclick="event.stopPropagation();copyPrompt('${h.id}')">复制提示词</span>
-      <span class="del" title="删除这条记录" onclick="event.stopPropagation();delHistory('${h.id}')">删除</span>
-      <div class="pp">${h.prompt.slice(0,80)}</div>
-      <div class="thumbs">${thumbs || '<span class="sub">无图片</span>'}</div>
-    </div>`;
-  }).join("");
-  // 精确显示 5 条，其余滚动
-  const items = box.querySelectorAll(".histitem");
-  if(items.length > 3){
-    let hgt = 0;
-    for(let i=0;i<3;i++) hgt += items[i].offsetHeight;
-    hgt += 2 * 8;  // gap
-    box.style.maxHeight = hgt + "px";
-  }
+}
+
+function pollHistory(){
+  if(CURRENT_PAGE === "library" && HIST_PAGE === 0) loadHistory();
 }
 
 let selIds = new Set();
@@ -766,7 +1259,7 @@ function toggleAll(on){
 }
 
 async function deleteSelected(){
-  if(!selIds.size) return alert("请先勾选要删除的记录");
+  if(!selIds.size) return showToast("请先勾选要删除的记录", "err");
   if(!confirm(`确定删除选中的 ${selIds.size} 条记录？图片也会一并删除。`)) return;
   const r = await fetch("/api/history/batch-delete", {
     method:"POST", headers:{"Content-Type":"application/json"},
@@ -777,10 +1270,10 @@ async function deleteSelected(){
     selIds.clear();
     document.getElementById("selCount").textContent = 0;
     const all = document.getElementById("selAll"); if(all) all.checked = false;
-    alert(`已删除 ${d.deleted_jobs} 条记录、${d.deleted_images} 张图片`);
+    showToast(`已删除 ${d.deleted_jobs} 条记录、${d.deleted_images} 张图片`, "ok");
     loadHistory();
   }else{
-    alert("删除失败");
+    showToast("删除失败", "err");
   }
 }
 
@@ -789,12 +1282,12 @@ async function clearHistory(){
   const r = await fetch("/api/history", {method:"DELETE"});
   if(r.ok){
     const d = await r.json();
-    alert(`已清空 ${d.deleted_jobs} 条记录，删除 ${d.deleted_images} 张图片`);
+    showToast(`已清空 ${d.deleted_jobs} 条记录，删除 ${d.deleted_images} 张图片`, "ok");
     selIds.clear();
     document.getElementById("selCount").textContent = 0;
     loadHistory();
   }else{
-    alert("清空失败");
+    showToast("清空失败", "err");
   }
 }
 
@@ -804,12 +1297,14 @@ async function delHistory(id){
     const r = await fetch(`/api/history/${id}`, {method:"DELETE"});
     if(!r.ok) throw new Error("删除失败");
     await loadHistory();
-  }catch(e){ alert("删除失败: " + e.message); }
+    showToast("已删除该记录", "ok");
+  }catch(e){ showToast("删除失败: " + e.message, "err"); }
 }
 
 async function showJob(id){
   const r = await fetch(`/api/jobs/${id}`);
   if(r.ok) render(await r.json());
+  else showToast("任务加载失败", "err");
   window.scrollTo({top:0,behavior:"smooth"});
 }
 
@@ -824,6 +1319,7 @@ function applyTransform(){
 }
 
 let lbCurrent = "";
+let lbOrigUrl = "";
 
 let s36Timer = null;
 
@@ -850,7 +1346,7 @@ async function startStress36(){
   const r = await fetch("/api/stress36/start", {method:"POST",
     headers:{"Content-Type":"application/json"}, body: JSON.stringify({conc, duration})});
   const d = await r.json();
-  if(!r.ok){ alert("启动失败: " + JSON.stringify(d).slice(0,200)); return; }
+  if(!r.ok){ showToast("启动失败: " + JSON.stringify(d).slice(0,200), "err"); return; }
   if(!s36Timer) s36Timer = setInterval(refreshStress36, 2000);
   refreshStress36();
 }
@@ -887,7 +1383,7 @@ async function loadProjects(){
     sel.value = saved;
     CUR_PROJECT = sel.value;
     sel.onchange = ()=>{ CUR_PROJECT = sel.value; try{ localStorage.setItem("imagehub.project", sel.value); }catch(e){} };
-  }catch(e){}
+  }catch(e){ showToast("项目列表加载失败：" + e.message, "err"); }
 }
 async function newProject(){
   const name = prompt("项目名称：");
@@ -895,8 +1391,8 @@ async function newProject(){
   const r = await fetch("/api/projects", {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({name})});
   const d = await r.json();
-  if(r.ok){ try{ localStorage.setItem("imagehub.project", d.id); }catch(e){} ; loadProjects(); }
-  else alert("创建失败: " + JSON.stringify(d).slice(0,120));
+  if(r.ok){ try{ localStorage.setItem("imagehub.project", d.id); }catch(e){} ; loadProjects(); showToast("项目已创建", "ok"); }
+  else showToast("创建失败: " + JSON.stringify(d).slice(0,120), "err");
 }
 
 async function loadAudit(){
@@ -908,7 +1404,7 @@ async function loadAudit(){
       <span>${new Date(a.created*1000).toLocaleString()} · <b>${a.actor||"-"}</b> · ${a.action}</span>
       <span class="sub" style="max-width:50%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(a.detail||"").slice(0,120)}</span></div>`).join("")
       || '<span class="sub">暂无记录</span>';
-  }catch(e){}
+  }catch(e){ showToast("审计日志加载失败：" + e.message, "err"); }
 }
 
 async function loadAdminPresets(){
@@ -920,7 +1416,7 @@ async function loadAdminPresets(){
       <span>${p.kind} · ${p.value}</span>
       <button class="mini" onclick="delPreset(${p.id})">删除</button></div>`).join("")
       || '<span class="sub">暂无自定义预设</span>';
-  }catch(e){}
+  }catch(e){ showToast("预设加载失败：" + e.message, "err"); }
 }
 async function addPreset(){
   const kind = document.getElementById("presetKind").value;
@@ -978,7 +1474,7 @@ async function loadUsers(){
         <button class="mini" ${prot?'disabled':''} onclick="delUser('${u.id}')">删除</button>
       </span></div>`;}).join("")
       || '<span class="sub">暂无用户（有人登录后自动出现）</span>';
-  }catch(e){}
+  }catch(e){ showToast("用户列表加载失败：" + e.message, "err"); }
 }
 async function delUser(uid){
   if(!confirm("确定删除该用户？")) return;
@@ -1006,7 +1502,7 @@ async function loadKeys(){
         <span class="sub">${k.last_used? '最近使用 '+new Date(k.last_used*1000).toLocaleString() : '未使用'}</span>
         <button class="mini" onclick="delKey(${k.id})">删除</button></span></div>`).join("")
       || '<span class="sub">暂无 Key</span>';
-  }catch(e){}
+  }catch(e){ showToast("Key 列表加载失败：" + e.message, "err"); }
 }
 async function createKey(){
   const name = document.getElementById("keyName").value.trim();
@@ -1016,6 +1512,8 @@ async function createKey(){
   const d = await r.json();
   document.getElementById("keyStatus").textContent = r.ok ? ("已生成（只显示一次）：" + d.key) : ("失败: " + JSON.stringify(d).slice(0,120));
   if(r.ok){ try{ await navigator.clipboard.writeText(d.key); document.getElementById("keyStatus").textContent += " 已复制"; }catch(e){} }
+  if(r.ok) showToast("API Key 已生成并复制", "ok");
+  else showToast("Key 创建失败：" + JSON.stringify(d).slice(0,120), "err");
   loadKeys();
 }
 async function copyText(t, btn){
@@ -1037,7 +1535,7 @@ async function loadSettings(){
     document.getElementById("setClocks").checked = !!d.clocks;
     document.getElementById("setStatus").textContent =
       `当前：${d.backend === "comfy" ? "ComfyUI" : "直连"} · 门控${d.gate ? "开" : "关"} · 锁频${d.clocks ? "开" : "关"}`;
-  }catch(e){}
+  }catch(e){ showToast("设置加载失败：" + e.message, "err"); }
 }
 
 async function saveSettings(){
@@ -1055,14 +1553,19 @@ async function saveSettings(){
     refreshStatus();
     document.getElementById("setStatus").textContent =
       `已保存：${d.backend === "comfy" ? "ComfyUI" : "直连"} · 门控${d.gate ? "开" : "关"} · 锁频${d.clocks ? "开" : "关"}`;
+    showToast("设置已保存", "ok");
   }catch(e){
     document.getElementById("setStatus").textContent = "保存失败: " + e;
+    showToast("保存失败：" + e.message, "err");
   }
 }
 
-function openLightbox(src, title, info){
-  lbCurrent = src;
+function openLightbox(src, title, info, orig){
+  lbCurrent = orig || src;
   lbImg.src = src;
+  lbOrigUrl = orig && orig !== src ? orig : "";
+  const origBtn = document.getElementById("lbOrig");
+  if(origBtn) origBtn.style.display = lbOrigUrl ? "" : "none";
   document.getElementById("lbTitle").textContent = title || "";
   document.getElementById("lbInfo").textContent = info || "";
   scale = 1; tx = 0; ty = 0; applyTransform();
@@ -1073,11 +1576,22 @@ function openLightbox(src, title, info){
 function closeLightbox(){
   lb.classList.remove("show");
   lbImg.src = "";
+  lbOrigUrl = "";
+  const origBtn = document.getElementById("lbOrig");
+  if(origBtn) origBtn.style.display = "none";
   document.body.style.overflow = "";
 }
 
 document.getElementById("lbClose").onclick = closeLightbox;
 document.getElementById("lbEdit").onclick = () => { if(lbCurrent) useForEdit(lbCurrent); };
+document.getElementById("lbOrig").onclick = () => {
+  if(!lbOrigUrl) return;
+  lbImg.src = lbOrigUrl;
+  lbCurrent = lbOrigUrl;
+  lbOrigUrl = "";
+  document.getElementById("lbOrig").style.display = "none";
+  scale = 1; tx = 0; ty = 0; applyTransform();
+};
 lb.addEventListener("click", (e) => { if(e.target === lb) closeLightbox(); });
 document.addEventListener("keydown", (e) => { if(e.key === "Escape") closeLightbox(); });
 
@@ -1131,7 +1645,7 @@ async function useForEdit(src){
     };
     rd.readAsDataURL(blob);
   }catch(e){
-    alert("载入图片失败: " + e.message);
+    showToast("载入图片失败: " + e.message, "err");
   }
 }
 
@@ -1153,8 +1667,8 @@ document.getElementById("editGo").onclick = async () => {
   const btn = document.getElementById("editGo");
   const status = document.getElementById("editStatus");
   const prompt = document.getElementById("editPrompt").value.trim();
-  if(!editB64) return alert("请先选择图片");
-  if(!prompt) return alert("请输入编辑指令");
+  if(!editB64) return showToast("请先选择图片", "err");
+  if(!prompt) return showToast("请输入编辑指令", "err");
   btn.disabled = true;
   status.textContent = "提交中…（首次加载模型约 30~60 秒）";
   fpStart("图片编辑", ["加载/复用模型", "编码参考图与指令", "采样与解码"]);
@@ -1170,18 +1684,21 @@ document.getElementById("editGo").onclick = async () => {
     if(d.status === "ok" && d.image){
       status.textContent = `完成 · ${d.duration}s`;
       fpDone(`编辑完成 ${d.duration}s`);
+      showToast(`编辑完成 · ${d.duration}s`, "ok");
       document.getElementById("editResult").innerHTML =
         `<div class="res" style="max-width:640px">
            <div class="hd"><b>Qwen-Image-Edit-2511</b><span class="badge ok">完成</span></div>
-           <img src="/image/${d.image}" onclick="openLightbox('/image/${d.image}', 'Qwen-Image-Edit-2511', '${d.duration}s')">
+           <img src="/thumb/${d.image}?w=1024" onclick="openLightbox('/thumb/${d.image}?w=1024', 'Qwen-Image-Edit-2511', '${d.duration}s', '/image/${d.image}')">
            <div class="ft"><span>编辑结果</span><span>${d.duration}s</span></div>
          </div>`;
     }else{
       status.textContent = "失败: " + (d.error || "未知错误");
       fpFail(d.error || "未知错误");
+      showToast("编辑失败：" + (d.error || "未知错误"), "err");
     }
   }catch(e){
     status.textContent = "错误: " + e.message;
+    showToast("编辑失败：" + e.message, "err");
   }finally{
     btn.disabled = false;
   }
@@ -1214,7 +1731,7 @@ async function loadPower(){
         <button class="mini" onclick="applyPower('${g.index}', null)">恢复默认</button>
         <span class="sub">范围 ${g.min}~${g.max}W</span>
       </div>`).join("");
-  }catch(e){}
+  }catch(e){ showToast("功耗信息加载失败：" + e.message, "err"); }
 }
 
 async function applyPower(gpu, limit){
@@ -1226,6 +1743,7 @@ async function applyPower(gpu, limit){
     const d = await r.json();
     if(!r.ok) throw new Error(d.detail || "失败");
     st.textContent = "已生效";
+    showToast(`GPU${gpu} 功耗已生效`, "ok");
     loadPower();
 fetch("/api/edit/model").then(r=>r.json()).then(d=>{
   const el = document.getElementById("editReady");
@@ -1234,6 +1752,7 @@ fetch("/api/edit/model").then(r=>r.json()).then(d=>{
 }).catch(()=>{}); refreshGpu();
   }catch(e){
     st.textContent = "失败: " + e.message;
+    showToast("功耗设置失败：" + e.message, "err");
   }
 }
 
@@ -1420,24 +1939,432 @@ function fpFail(msg){
 }
 function fpHide(){ if(_fpTimer){ clearInterval(_fpTimer); _fpTimer=null; } document.getElementById("fp").style.display="none"; }
 
+// ==================== TTS ====================
+let TTS_TAB = "custom";
+let TTS_REC_BLOB = null;
+let TTS_RECORDER = null;
+
+function switchTTSTab(name){
+  TTS_TAB = name;
+  document.querySelectorAll(".tts-tab").forEach(b=>b.classList.toggle("on", b.dataset.ttsTab===name));
+  document.querySelectorAll(".tts-pane").forEach(p=>p.style.display = p.dataset.ttsPane===name ? "" : "none");
+  try{ localStorage.setItem("imagehub.tts.tab", name); }catch(e){}
+}
+function ttsMsg(text, err){
+  const el = document.getElementById("ttsMsg");
+  if(!el) return;
+  el.textContent = text || "";
+  el.style.color = err ? "#c0392b" : "";
+}
+function ttsLangValue(tab){
+  const el = document.getElementById("ttsLang" + (tab==="custom"?"Custom":tab==="design"?"Design":"Clone"));
+  return (el && el.value) || "Auto";
+}
+function fillTTSVoices(d){
+  const sp = document.getElementById("ttsSpeaker");
+  if(sp && d.speakers && d.speakers.length){
+    sp.innerHTML = d.speakers.map(s=>`<option value="${esc(s.name)}">${esc(s.name)} · ${esc(s.description||"")}</option>`).join("");
+  }
+  ["Custom","Design","Clone"].forEach(k=>{
+    const el = document.getElementById("ttsLang"+k);
+    if(el && d.languages && d.languages.length){
+      const cur = el.value;
+      el.innerHTML = d.languages.map(l=>`<option value="${esc(l)}">${esc(l)}</option>`).join("");
+      if(cur) el.value = cur;
+    }
+  });
+}
+function renderTTSStatus(st){
+  const el = document.getElementById("ttsStatus");
+  if(!el) return;
+  const parts = [];
+  const state = st.state || "stopped";
+  if(state === "loading") parts.push("正在加载三个模型…");
+  else if(state === "ready") parts.push("TTS 已加载（三个模型）");
+  else if(state === "error") parts.push("TTS 加载失败：" + (st.error || "未知错误"));
+  else parts.push("TTS 未加载");
+  if(st.active > 0) parts.push("正在生成 " + st.active + " 个");
+  if(st.pending > 0) parts.push("排队中 " + st.pending + " 个");
+  const img = st.image || {};
+  if(img.busy) parts.push("图像任务进行中，TTS 将等待图像任务完成");
+  else if(img.loaded) parts.push("图像模型驻留：" + img.loaded);
+  el.textContent = parts.join(" · ");
+}
+async function loadTTS(){
+  try{
+    const rs = await Promise.all([
+      fetch("/api/tts/status", {cache:"no-store"}).then(r=>r.json()),
+      fetch("/api/tts/voices", {cache:"no-store"}).then(r=>r.ok?r.json():null).catch(()=>null)
+    ]);
+    renderTTSStatus(rs[0] || {});
+    if(rs[1]) fillTTSVoices(rs[1]);
+  }catch(e){
+    ttsMsg("TTS 状态获取失败：" + e.message, true);
+    showToast("TTS 状态获取失败：" + e.message, "err");
+  }
+}
+function pollTTS(){ if(CURRENT_PAGE === "tts") loadTTS(); }
+async function ttsLoad(){
+  ttsMsg("正在加载三个模型…");
+  showToast("正在加载三个模型…");
+  try{
+    const r = await fetch("/api/tts/load", {method:"POST"});
+    const d = await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
+    ttsMsg("TTS 已加载");
+    showToast("TTS 已加载", "ok");
+  }catch(e){ ttsMsg("加载失败：" + e.message, true); showToast("加载失败：" + e.message, "err"); }
+  loadTTS();
+}
+async function ttsUnload(){
+  try{
+    const r = await fetch("/api/tts/unload", {method:"POST"});
+    const d = await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
+    ttsMsg("TTS 已释放");
+    showToast("TTS 已释放", "ok");
+  }catch(e){ ttsMsg("释放失败：" + e.message, true); showToast("释放失败：" + e.message, "err"); }
+  loadTTS();
+}
+async function ttsRecord(){
+  const btn = document.getElementById("ttsRecordBtn");
+  if(TTS_RECORDER){ TTS_RECORDER.stop(); return; }
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    const chunks = [];
+    TTS_RECORDER = new MediaRecorder(stream);
+    TTS_RECORDER.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
+    TTS_RECORDER.onstop = () => {
+      TTS_REC_BLOB = new Blob(chunks, {type: TTS_RECORDER.mimeType || "audio/webm"});
+      stream.getTracks().forEach(t=>t.stop());
+      TTS_RECORDER = null;
+      btn.textContent = "录音";
+      ttsMsg("录音完成，点击生成语音");
+    };
+    TTS_RECORDER.start();
+    btn.textContent = "停止录音";
+    ttsMsg("录音中…");
+  }catch(e){ ttsMsg("无法录音：" + e.message, true); }
+}
+async function ttsWaitText(){
+  try{
+    const tts = await fetch("/api/tts/status", {cache: "no-store"}).then(r=>r.json());
+    if(tts.state === "loading") return "TTS 正在加载三个模型，请稍候…";
+    if((tts.image || {}).busy) return "等待当前图像任务结束…";
+    if((tts.pending || 0) > 0) return "TTS 排队中…";
+    if(tts.state === "ready") return "正在合成语音…";
+    return "正在准备 TTS…";
+  }catch(e){ return "正在合成语音…"; }
+}
+async function ttsGo(){
+  const tab = TTS_TAB;
+  const textEl = document.getElementById(tab==="custom"?"ttsTextCustom":tab==="design"?"ttsTextDesign":"ttsTextClone");
+  const text = (textEl && textEl.value || "").trim();
+  if(!text){ ttsMsg("请输入要合成的文本", true); return; }
+  if(tab === "design"){
+    const instr = (document.getElementById("ttsInstructDesign").value || "").trim();
+    if(!instr){ ttsMsg("请填写声音描述", true); return; }
+  }
+  let file = null;
+  if(tab === "clone"){
+    file = document.getElementById("ttsRefFile").files[0] || TTS_REC_BLOB;
+    if(!file){ ttsMsg("请选择参考音频或录音", true); return; }
+  }
+  const btn = document.getElementById("ttsGo");
+  btn.disabled = true;
+  ttsMsg("合成中…");
+  showToast("正在准备 TTS…");
+  const waitTimer = setInterval(async ()=>{ showToast(await ttsWaitText()); }, 1500);
+  try{
+    let resp;
+    if(tab === "clone"){
+      const fd = new FormData();
+      fd.append("text", text);
+      fd.append("language", ttsLangValue(tab));
+      const rt = (document.getElementById("ttsRefText").value || "").trim();
+      fd.append("ref_text", rt);
+      fd.append("x_vector_only_mode", rt ? "false" : "true");
+      fd.append("ref_audio", file, file.name || "record.webm");
+      resp = await fetch("/api/tts/clone", {method:"POST", body:fd});
+    }else{
+      const body = {variant: tab, text, language: ttsLangValue(tab)};
+      if(tab === "custom"){
+        body.speaker = document.getElementById("ttsSpeaker").value;
+        body.instruct = (document.getElementById("ttsInstructCustom").value || "").trim() || null;
+      }else{
+        body.instruct = (document.getElementById("ttsInstructDesign").value || "").trim();
+      }
+      resp = await fetch("/api/tts/speak", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+    }
+    if(!resp.ok){
+      let detail = "";
+      try{ detail = (await resp.json()).detail || ""; }catch(e){}
+      throw new Error(detail || ("HTTP " + resp.status));
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const out = document.getElementById("ttsOut");
+    out.innerHTML = "";
+    const audio = document.createElement("audio");
+    audio.controls = true;
+    audio.src = url;
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "tts-" + Date.now() + ".wav";
+    a.textContent = "下载 WAV";
+    a.className = "mini link";
+    a.style.marginLeft = "10px";
+    out.appendChild(audio);
+    out.appendChild(a);
+    clearInterval(waitTimer);
+    showToast("合成完成", "ok");
+    ttsMsg("合成完成");
+    loadTTSHistory(0);
+  }catch(e){
+    clearInterval(waitTimer);
+    showToast("合成失败：" + e.message, "err");
+    ttsMsg("合成失败：" + e.message, true);
+  }
+  finally{ clearInterval(waitTimer); btn.disabled = false; loadTTS(); refreshModelChips(); }
+}
+
+// ---------- TTS 生成记录 ----------
+let TTS_HIST_PAGE = 0, TTS_HIST_LIMIT = 10, TTS_HIST = [];
+let TTS_AUTO = {on: false, ids: [], idx: 0};
+const TTS_VARIANT_LABEL = {custom: "自定义音色", design: "声音设计", clone: "声音克隆"};
+function ttsFmtTime(ts){
+  try{ return new Date((ts || 0) * 1000).toLocaleString("zh-CN", {hour12: false}); }
+  catch(e){ return ""; }
+}
+function ttsFmtSize(n){
+  n = Number(n || 0);
+  if(!n) return "";
+  return n >= 1048576 ? (n / 1048576).toFixed(1) + "MB" : Math.round(n / 1024) + "KB";
+}
+async function loadTTSHistory(page){
+  if(page === undefined || page === null) page = TTS_HIST_PAGE;
+  TTS_HIST_PAGE = Math.max(0, page);
+  try{
+    const r = await fetch(`/api/tts/history?limit=${TTS_HIST_LIMIT}&offset=${TTS_HIST_PAGE * TTS_HIST_LIMIT}`, {cache: "no-store"});
+    if(!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
+    if(!(d.rows || []).length && TTS_HIST_PAGE > 0 && (d.total || 0) > 0){
+      TTS_HIST_PAGE -= 1;
+      return loadTTSHistory(TTS_HIST_PAGE);
+    }
+    renderTTSHistory(d);
+  }catch(e){ ttsMsg("记录加载失败：" + e.message, true); }
+}
+function renderTTSHistory(d){
+  const box = document.getElementById("ttsHistList");
+  if(!box) return;
+  if(TTS_AUTO.on) ttsStopAuto();
+  const rows = d.rows || [];
+  const total = d.total || 0;
+  TTS_HIST = rows;
+  const pages = Math.max(1, Math.ceil(total / TTS_HIST_LIMIT));
+  const totalEl = document.getElementById("ttsHistTotal");
+  const pageEl = document.getElementById("ttsHistPage");
+  const prev = document.getElementById("ttsHistPrev");
+  const next = document.getElementById("ttsHistNext");
+  if(totalEl) totalEl.textContent = total ? `共 ${total} 条` : "";
+  if(pageEl) pageEl.textContent = `第 ${TTS_HIST_PAGE + 1} / ${pages} 页`;
+  if(prev) prev.disabled = TTS_HIST_PAGE <= 0;
+  if(next) next.disabled = TTS_HIST_PAGE + 1 >= pages;
+  if(!rows.length){
+    box.innerHTML = '<div class="sub" style="padding:16px 0">暂无语音记录</div>';
+    const all = document.getElementById("ttsSelAll");
+    if(all) all.checked = false;
+    ttsUpdateSel();
+    return;
+  }
+  box.innerHTML = rows.map(h=>{
+    const meta = [TTS_VARIANT_LABEL[h.variant] || h.variant, h.speaker, h.language,
+                  "时长 " + Number(h.duration || 0).toFixed(1) + "s",
+                  "生成 " + Number(h.elapsed || 0).toFixed(1) + "s",
+                  ttsFmtSize(h.size), ttsFmtTime(h.created)].filter(Boolean).join(" · ");
+    const snippet = (h.text || "").slice(0, 120);
+    return `<div class="tts-histitem" data-id="${esc(h.id)}" style="display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--line)">
+      <input type="checkbox" class="tts-sel" data-id="${esc(h.id)}" onchange="ttsUpdateSel()">
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <audio controls preload="none" src="/api/tts/audio/${encodeURIComponent(h.file)}" style="height:32px"></audio>
+          <span class="sub">${esc(meta)}</span>
+          <button class="mini" style="font-size:11px" onclick="ttsDeleteOne('${esc(h.id)}')">删除</button>
+          <a class="mini link" style="font-size:11px" href="/api/tts/audio/${encodeURIComponent(h.file)}" download="${esc(ttsDownloadName(h))}">下载</a>
+        </div>
+        <div class="sub" style="margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(h.text || "")}">${esc(snippet)}</div>
+      </div>
+    </div>`;
+  }).join("");
+  const all = document.getElementById("ttsSelAll");
+  if(all) all.checked = false;
+  ttsUpdateSel();
+}
+function ttsUpdateSel(){
+  const boxes = document.querySelectorAll(".tts-sel");
+  const n = document.querySelectorAll(".tts-sel:checked").length;
+  const cnt = document.getElementById("ttsSelCount");
+  if(cnt) cnt.textContent = String(n);
+  const all = document.getElementById("ttsSelAll");
+  if(all) all.checked = boxes.length > 0 && n === boxes.length;
+}
+function ttsToggleAll(on){
+  document.querySelectorAll(".tts-sel").forEach(b=>{ b.checked = !!on; });
+  ttsUpdateSel();
+}
+async function ttsDeleteOne(id){
+  if(!confirm("删除这条语音？")) return;
+  try{
+    const r = await fetch("/api/tts/history/" + encodeURIComponent(id), {method: "DELETE"});
+    if(!r.ok) throw new Error("HTTP " + r.status);
+    loadTTSHistory();
+    showToast("已删除该语音", "ok");
+  }catch(e){ ttsMsg("删除失败：" + e.message, true); showToast("删除失败：" + e.message, "err"); }
+}
+async function ttsDeleteSelected(){
+  const ids = [...document.querySelectorAll(".tts-sel:checked")].map(b=>b.dataset.id);
+  if(!ids.length){ ttsMsg("请先选择要删除的记录", true); showToast("请先选择要删除的记录", "err"); return; }
+  if(!confirm(`删除选中的 ${ids.length} 条语音？`)) return;
+  try{
+    const r = await fetch("/api/tts/history/batch-delete", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ids})
+    });
+    if(!r.ok) throw new Error("HTTP " + r.status);
+    loadTTSHistory();
+    showToast(`已删除 ${ids.length} 条语音`, "ok");
+  }catch(e){ ttsMsg("删除失败：" + e.message, true); showToast("删除失败：" + e.message, "err"); }
+}
+function ttsDownloadName(h){
+  const digits = (ttsFmtTime(h.created) || "").replace(/[^\d]/g, "").slice(0, 14);
+  return `tts_${digits}_${h.variant || "tts"}_${String(h.id || "").slice(0, 8)}.wav`;
+}
+async function ttsDownloadSelected(){
+  const ids = [...document.querySelectorAll(".tts-sel:checked")].map(b=>b.dataset.id);
+  if(!ids.length){ ttsMsg("请先选择要下载的记录", true); showToast("请先选择要下载的记录", "err"); return; }
+  if(ids.length === 1){
+    const row = TTS_HIST.find(h=>h.id === ids[0]);
+    if(!row) return;
+    const a = document.createElement("a");
+    a.href = "/api/tts/audio/" + encodeURIComponent(row.file);
+    a.download = ttsDownloadName(row);
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    return;
+  }
+  try{
+    const r = await fetch("/api/tts/history/batch-download", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ids})
+    });
+    if(!r.ok){
+      let detail = "";
+      try{ detail = (await r.json()).detail || ""; }catch(e){}
+      throw new Error(detail || ("HTTP " + r.status));
+    }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "tts-audio-" + Date.now() + ".zip";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 10000);
+    showToast("已打包下载", "ok");
+  }catch(e){ ttsMsg("下载失败：" + e.message, true); showToast("下载失败：" + e.message, "err"); }
+}
+function ttsRow(id){
+  return [...document.querySelectorAll(".tts-histitem")].find(r=>r.dataset.id === id) || null;
+}
+function ttsStopAuto(){
+  TTS_AUTO.on = false;
+  const btn = document.getElementById("ttsAutoBtn");
+  if(btn){ btn.classList.remove("on"); btn.textContent = "自动轮播"; }
+  document.querySelectorAll(".tts-histitem.tts-playing").forEach(e=>e.classList.remove("tts-playing"));
+  document.querySelectorAll(".tts-histitem audio").forEach(a=>{ if(!a.paused) a.pause(); });
+}
+function ttsPlayIndex(i){
+  if(!TTS_AUTO.on) return;
+  if(i < 0 || i >= TTS_AUTO.ids.length){ ttsStopAuto(); ttsMsg("轮播结束"); return; }
+  TTS_AUTO.idx = i;
+  const row = ttsRow(TTS_AUTO.ids[i]);
+  if(!row){ ttsPlayIndex(i + 1); return; }
+  document.querySelectorAll(".tts-histitem.tts-playing").forEach(e=>e.classList.remove("tts-playing"));
+  row.classList.add("tts-playing");
+  row.scrollIntoView({block: "nearest", behavior: "smooth"});
+  const audio = row.querySelector("audio");
+  if(!audio){ ttsPlayIndex(i + 1); return; }
+  try{ audio.currentTime = 0; }catch(e){}
+  audio.play().catch(()=>{});
+}
+function ttsToggleAuto(){
+  const btn = document.getElementById("ttsAutoBtn");
+  if(TTS_AUTO.on){ ttsStopAuto(); return; }
+  const ids = [...document.querySelectorAll(".tts-sel:checked")].map(b=>b.dataset.id);
+  if(!ids.length){
+    ttsMsg("请先选择要轮播的语音", true);
+    showToast("请先选择要轮播的语音", "err");
+    return;
+  }
+  TTS_AUTO = {on: true, ids, idx: -1};
+  if(btn){ btn.classList.add("on"); btn.textContent = "停止轮播"; }
+  ttsPlayIndex(0);
+}
+document.getElementById("ttsHistList").addEventListener("ended", e=>{
+  if(!TTS_AUTO.on) return;
+  const row = e.target.closest && e.target.closest(".tts-histitem");
+  if(!row) return;
+  if(row.dataset.id === TTS_AUTO.ids[TTS_AUTO.idx]) ttsPlayIndex(TTS_AUTO.idx + 1);
+}, true);
+document.getElementById("ttsHistList").addEventListener("play", e=>{
+  if(!TTS_AUTO.on) return;
+  const row = e.target.closest && e.target.closest(".tts-histitem");
+  if(!row) return;
+  const i = TTS_AUTO.ids.indexOf(row.dataset.id);
+  if(i >= 0) TTS_AUTO.idx = i;
+}, true);
+
+(function(){
+  const btn = document.getElementById("ttsRecordBtn");
+  if(btn && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) btn.style.display = "";
+  try{
+    const tab = localStorage.getItem("imagehub.tts.tab");
+    if(tab) switchTTSTab(tab);
+  }catch(e){}
+  ["ttsTextCustom","ttsInstructCustom","ttsTextDesign","ttsInstructDesign","ttsRefText","ttsTextClone"].forEach(id=>{
+    const el = document.getElementById(id);
+    if(!el) return;
+    try{ el.value = localStorage.getItem("imagehub.tts." + id) || ""; }catch(e){}
+    el.addEventListener("input", ()=>{ try{ localStorage.setItem("imagehub.tts." + id, el.value); }catch(e){} });
+  });
+})();
+
 const _pageLoaded = new Set();
 function switchPage(name){
   if(name==="admin"){
     const n = document.getElementById("navAdmin");
     if(!n || n.style.display === "none") name = "work";
   }
+  CURRENT_PAGE = name;
+  if(name !== "tts" && TTS_AUTO.on) ttsStopAuto();
   try{ localStorage.setItem("imagehub.page", name); }catch(e){}
   document.querySelectorAll(".page").forEach(p=>p.classList.toggle("active", p.dataset.page===name));
   document.querySelectorAll(".nav a[data-page]").forEach(a=>a.classList.toggle("on", a.dataset.page===name));
   window.scrollTo({top:0});
-  if(!_pageLoaded.has(name)){
+  if(name === "library"){
+    loadHistory();
+  } else if(name === "tts"){
+    loadTTS();
+    loadTTSHistory(0);
+  } else if(!_pageLoaded.has(name)){
     _pageLoaded.add(name);
     if(name === "admin"){
       loadUsers(); loadKeys(); loadAudit(); loadAdminPresets(); refreshStress36();
     }else if(name === "design"){
       loadPresets();
-    }else if(name === "library"){
-      loadHistory();
     }
   }
 }
@@ -1457,16 +2384,19 @@ document.querySelectorAll(".nav a[data-page]").forEach(a=>{
   switchPage(saved);
 })();
 
+initApiBase();
+refreshModelChips();
 loadModels();
-loadHistory();
 loadSettings();
 loadProjects();
 // 定时刷新历史（其他客户端/API 生成的图也能自动出现）
 function pollWhenVisible(fn, ms){
   setInterval(()=>{ if(!document.hidden) fn(); }, ms);
 }
-pollWhenVisible(()=>{ if(HIST_PAGE === 0) loadHistory(); }, 20000);
+pollWhenVisible(pollHistory, 20000);
 pollWhenVisible(refreshStatus, 5000);
+pollWhenVisible(pollTTS, 5000);
+pollWhenVisible(refreshModelChips, 5000);
 loadPower();
 fetch("/api/edit/model").then(r=>r.json()).then(d=>{
   const el = document.getElementById("editReady");

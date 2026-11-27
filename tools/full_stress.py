@@ -7,11 +7,15 @@ import base64
 import io
 import json
 import os
+import ssl
 import sys
 import time
 import urllib.request
 
-BASE = "http://127.0.0.1:5569"
+BASE = os.environ.get("IMAGEHUB_BASE_URL", "http://127.0.0.1:5569")
+CA = os.environ.get("IMAGEHUB_CA", "/etc/imagehub/tls/imagehub.crt")
+SSL_CTX = (ssl.create_default_context(cafile=CA)
+           if BASE.startswith("https://") and os.path.exists(CA) else None)
 KEY = sys.argv[1] if len(sys.argv) > 1 else ""
 H = {"Content-Type": "application/json"}
 LOG = "/var/log/full_stress.log"
@@ -23,7 +27,7 @@ def post(path, payload, timeout=2400):
     req = urllib.request.Request(BASE + path, data=json.dumps(payload).encode(), headers=H)
     t0 = time.time()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout, context=SSL_CTX) as r:
             d = json.loads(r.read())
         return True, round(time.time() - t0, 1), d
     except urllib.error.HTTPError as e:
@@ -119,7 +123,7 @@ if ok:
     while time.time() - t0 < 900:
         time.sleep(4)
         try:
-            j = json.loads(urllib.request.urlopen(f"{BASE}/v1/jobs/{jid}", timeout=10).read())
+            j = json.loads(urllib.request.urlopen(f"{BASE}/v1/jobs/{jid}", timeout=10, context=SSL_CTX).read())
         except Exception:
             continue
         if j.get("status") in ("done", "error"):
@@ -141,7 +145,7 @@ if ok:
     while time.time() - t0 < 1800:
         time.sleep(5)
         try:
-            j = json.loads(urllib.request.urlopen(f"{BASE}/api/jobs/{jid}", timeout=10).read())
+            j = json.loads(urllib.request.urlopen(f"{BASE}/api/jobs/{jid}", timeout=10, context=SSL_CTX).read())
         except Exception:
             continue
         if j.get("status") == "done":

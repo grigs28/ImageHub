@@ -15,26 +15,35 @@ ImageHub BFF：直连 diffusers 图像服务（不再经过 ComfyUI）
   edit   5564  Qwen-Image-Edit-2511   (CUDA 2,3 split)
 """
 import base64
+import collections
+import contextlib
+import io
 import json
 import logging
 import os
+import queue
 import re
+import signal
 import sqlite3
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
+import urllib.error
 import urllib.request
+import wave
+import zipfile
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 from urllib.parse import quote
 from pydantic import BaseModel
 
-APP_VERSION = "1.5.0"          # ImageHub 版本号（1.5.0：设计版，ControlNet/权限/设计工作流）
-APP_BUILD = "2026-11-20"
+APP_VERSION = "1.7.3"          # ImageHub 版本号（1.7.3：轮播只播勾选项）
+APP_BUILD = "2026-11-27"
 
 logger = logging.getLogger("imagehub")
 logging.basicConfig(level=logging.INFO)
@@ -42,15 +51,35 @@ logging.basicConfig(level=logging.INFO)
 OUTPUT_DIR = os.environ.get("IMAGEHUB_OUTPUT", "/opt/vLLM/imagehub/output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "imagehub.db")
-RUN_DIR = os.path.join(BASE_DIR, "run")
+DB_PATH = os.environ.get("IMAGEHUB_DB", os.path.join(BASE_DIR, "imagehub.db"))
+RUN_DIR = os.environ.get("IMAGEHUB_RUN", os.path.join(BASE_DIR, "run"))
 os.makedirs(RUN_DIR, exist_ok=True)
+LEGACY_DIRS = ["/opt/ComfyUI/output"]
+THUMB_DIR = os.environ.get("IMAGEHUB_THUMBS", os.path.join(BASE_DIR, "thumbs"))
+os.makedirs(THUMB_DIR, exist_ok=True)
 PY_BIN = os.environ.get("IMAGEHUB_PY", "/opt/conda3/envs/imagegen/bin/python")
 
 # ComfyUI 后端（可切换）
 COMFY = "http://127.0.0.1:5568"
 COMFY_OUTPUT = "/opt/ComfyUI/output"
 COMFY_INPUT = "/opt/ComfyUI/input"
+
+# TTS 服务（Qwen3-TTS 1.7B 三变体，内部 127.0.0.1:5570）
+TTS_PORT = int(os.environ.get("IMAGEHUB_TTS_PORT", "5570"))
+TTS_PY = os.environ.get("IMAGEHUB_TTS_PY", "/opt/conda3/envs/qwen-tts/bin/python")
+TTS_MODELS = {
+    "custom": os.environ.get("IMAGEHUB_TTS_CUSTOM", "/opt/models/Qwen3-TTS/CustomVoice"),
+    "design": os.environ.get("IMAGEHUB_TTS_DESIGN", "/opt/models/Qwen3-TTS/VoiceDesign"),
+    "clone": os.environ.get("IMAGEHUB_TTS_CLONE", "/opt/models/Qwen3-TTS/Base"),
+}
+_tts = {"proc": None, "state": "stopped", "error": None, "active": 0, "pending": 0}
+_tts_lock = threading.RLock()
+_arbiter_q = collections.deque()
+_arbiter_lock = threading.Lock()
+TTS_MAX_UPLOAD = int(os.environ.get("IMAGEHUB_TTS_MAX_UPLOAD",
+                                    str(20 * 1024 * 1024)))
+TTS_OUT_DIR = os.environ.get("IMAGEHUB_TTS_OUT", os.path.join(OUTPUT_DIR, "tts"))
+os.makedirs(TTS_OUT_DIR, exist_ok=True)
 
 SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
 _DEF_SETTINGS = {"backend": "direct", "gate": False, "clocks": False}
@@ -111,9 +140,17 @@ YZ_APP_SECRET = os.environ.get("YZ_APP_SECRET", "")
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "imagehub-dev-secret-change-me")
 SSO_ENABLED = bool(YZ_APP_SECRET)
 
+
+def _tls_enabled():
+    cert = os.environ.get("IMAGEHUB_TLS_CERT")
+    key = os.environ.get("IMAGEHUB_TLS_KEY")
+    return bool(cert and key and os.path.isfile(cert) and os.path.isfile(key))
+
+
 app = FastAPI(title="ImageHub")
 app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET,
-                   session_cookie="imagehub_session", max_age=8 * 3600)
+                   session_cookie="imagehub_session", max_age=8 * 3600,
+                   https_only=_tls_enabled())
 _jobs = {}
 _lock = threading.Lock()
 _STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
@@ -138,7 +175,8 @@ def _save_state(model_key):
         pass
 
 
-_state = {"loaded": None, "comfy_loaded": None, "active": 0, "switching": False, "target": None}
+_state = {"loaded": None, "comfy_loaded": None, "active": 0, "switching": False,
+          "target": None, "image_pending": 0}
 _cond = threading.Condition()
 
 
@@ -191,6 +229,8 @@ def _model_ready(model_key):
     spec = MODELS.get(model_key)
     if not spec:
         return False
+    if spec.get("comfy_only"):
+        return all(os.path.exists(p) for p in spec.get("needs", []))
     svc = SERVICES.get(spec["svc"], {})
     if svc.get("pending") or not (svc.get("app") or svc.get("cmd")):
         return False
@@ -214,6 +254,32 @@ MODELS = {
              "size": (1024, 1024), "max_size": 2048, "warm": (640, 640),
              "note": "布局/海报专精，25步",
              "gpus": "GPU2+GPU3 · 编码器@2 DiT@3"},
+    "flux2klein": {
+        "name": "flux2klein", "svc": "comfy", "label": "FLUX.2 Klein 4B",
+        "size": (1024, 1024), "max_size": 2048, "warm": (1024, 1024),
+        "note": "4 步蒸馏，速度最快，英文/写实强",
+        "gpus": "ComfyUI · GPU0/1",
+        "comfy_only": True,
+        "needs": [
+            "/opt/ComfyUI/models/diffusion_models/flux-2-klein-4b-fp8.safetensors",
+            "/opt/ComfyUI/models/text_encoders/qwen_3_4b.safetensors",
+            "/opt/ComfyUI/models/vae/flux2-vae.safetensors",
+        ],
+    },
+    "nemotron": {
+        "name": "nemotron", "svc": "comfy", "label": "Nemotron-30B-A3B",
+        "size": (1024, 1024), "max_size": 2048, "warm": (1024, 1024),
+        "note": "自回归 30B/3B W4A8，写实/长提示词强",
+        "gpus": "ComfyUI · GPU0/1",
+        "comfy_only": True,
+        "needs": [
+            "/opt/ComfyUI/models/diffusion_models/nemotron-image/"
+            "nemotron_labs_image_30b_a3b_w4a8.safetensors",
+            "/opt/ComfyUI/models/vae/nemotron-image/"
+            "nemotron_labs_image_tokenizer_bf16.safetensors",
+            "/opt/ComfyUI/models/text_encoders/qwen_3_4b.safetensors",
+        ],
+    },
 }
 
 
@@ -227,50 +293,195 @@ except Exception:
 
 
 # ==================== 工具函数 ====================
-def db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""CREATE TABLE IF NOT EXISTS jobs(
-        id TEXT PRIMARY KEY, prompt TEXT, models TEXT, created REAL,
-        results TEXT)""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS users(
-        id TEXT PRIMARY KEY, username TEXT, display_name TEXT,
-        is_admin INTEGER DEFAULT 0, source TEXT DEFAULT 'yz',
-        synced_at REAL, updated_at REAL)""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS api_keys(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, key_hash TEXT UNIQUE,
-        role TEXT DEFAULT 'user', enabled INTEGER DEFAULT 1,
-        created REAL, last_used REAL, quota_json TEXT)""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS audit(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT, action TEXT,
-        detail TEXT, created REAL)""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS presets(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, value TEXT, created REAL,
-        UNIQUE(kind, value))""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS projects(
-        id TEXT PRIMARY KEY, name TEXT, owner TEXT, created REAL)""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS assets(
-        id TEXT PRIMARY KEY, project_id TEXT, kind TEXT, path TEXT,
-        meta TEXT, created REAL)""")
-    conn.execute("PRAGMA journal_mode=WAL")
-    try:
-        conn.execute("ALTER TABLE jobs ADD COLUMN status TEXT DEFAULT 'done'")
-        conn.commit()
-    except Exception:
-        pass
-    try:
-        conn.execute("ALTER TABLE api_keys ADD COLUMN key_plain TEXT")
-        conn.commit()
-    except Exception:
-        pass
-    try:
-        conn.execute("ALTER TABLE jobs ADD COLUMN project TEXT")
-        conn.commit()
-    except Exception:
-        pass
-    # 启动时把上次未完成的任务标记为中断
-    conn.execute("UPDATE jobs SET status='interrupted' WHERE status='running'")
-    conn.commit()
+_schema_lock = threading.Lock()
+_schema_ready = False
+
+
+def _ensure_schema():
+    """建表、WAL、迁移、索引、启动中断标记，只执行一次。"""
+    global _schema_ready
+    if _schema_ready:
+        return
+    with _schema_lock:
+        if _schema_ready:
+            return
+        conn = sqlite3.connect(DB_PATH, timeout=5)
+        try:
+            conn.execute("""CREATE TABLE IF NOT EXISTS jobs(
+                id TEXT PRIMARY KEY, prompt TEXT, models TEXT, created REAL,
+                results TEXT)""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS users(
+                id TEXT PRIMARY KEY, username TEXT, display_name TEXT,
+                is_admin INTEGER DEFAULT 0, source TEXT DEFAULT 'yz',
+                synced_at REAL, updated_at REAL)""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS api_keys(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, key_hash TEXT UNIQUE,
+                role TEXT DEFAULT 'user', enabled INTEGER DEFAULT 1,
+                created REAL, last_used REAL, quota_json TEXT)""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS audit(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT, action TEXT,
+                detail TEXT, created REAL)""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS presets(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, value TEXT, created REAL,
+                UNIQUE(kind, value))""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS projects(
+                id TEXT PRIMARY KEY, name TEXT, owner TEXT, created REAL)""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS assets(
+                id TEXT PRIMARY KEY, project_id TEXT, kind TEXT, path TEXT,
+                meta TEXT, created REAL)""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS tts_audio(
+                id TEXT PRIMARY KEY, created REAL NOT NULL, variant TEXT, text TEXT,
+                language TEXT, speaker TEXT, instruct TEXT, file TEXT,
+                duration REAL, elapsed REAL, size INTEGER,
+                status TEXT DEFAULT 'ok', error TEXT)""")
+            conn.execute("PRAGMA journal_mode=WAL")
+            try:
+                conn.execute("ALTER TABLE jobs ADD COLUMN status TEXT DEFAULT 'done'")
+                conn.commit()
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE api_keys ADD COLUMN key_plain TEXT")
+                conn.commit()
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE jobs ADD COLUMN project TEXT")
+                conn.commit()
+            except Exception:
+                pass
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_project_created "
+                         "ON jobs(project, created DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tts_audio_created "
+                         "ON tts_audio(created DESC)")
+            conn.execute("UPDATE jobs SET status='interrupted' WHERE status='running'")
+            conn.commit()
+        finally:
+            conn.close()
+        _schema_ready = True
+
+
+def db(readonly=False):
+    _ensure_schema()
+    if readonly:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=5)
+    else:
+        conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
+
+
+# ==================== 缩略图 ====================
+_thumb_locks = {}
+_thumb_locks_guard = threading.Lock()
+_thumb_q = queue.Queue(maxsize=2000)
+_thumb_workers_started = False
+_thumb_workers_lock = threading.Lock()
+
+
+def _thumb_path(filename, w):
+    name = os.path.basename(filename)
+    w = max(64, min(int(w), 1024))
+    return os.path.join(THUMB_DIR, f"{os.path.splitext(name)[0]}_{w}.jpg")
+
+
+def _find_source(filename):
+    name = os.path.basename(filename)
+    for d in [OUTPUT_DIR] + LEGACY_DIRS:
+        p = os.path.join(d, name)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def _thumb_lock(out):
+    with _thumb_locks_guard:
+        return _thumb_locks.setdefault(out, threading.Lock())
+
+
+def _ensure_thumb(filename, w):
+    from PIL import Image
+    w = max(64, min(int(w), 1024))
+    name = os.path.basename(filename)
+    out = _thumb_path(name, w)
+    if os.path.isfile(out):
+        return out
+    with _thumb_lock(out):
+        if os.path.isfile(out):
+            return out
+        src = _find_source(name)
+        if not src:
+            return None
+        im = Image.open(src).convert("RGB")
+        im.thumbnail((w, w * 8))
+        fd, tmp = tempfile.mkstemp(prefix=".thumb_", suffix=".jpg", dir=THUMB_DIR)
+        os.close(fd)
+        try:
+            im.save(tmp, "JPEG", quality=82)
+            os.replace(tmp, out)
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
+    return out
+
+
+def _thumb_worker():
+    while True:
+        image, w = _thumb_q.get()
+        try:
+            _ensure_thumb(image, w)
+        except Exception as e:
+            logger.warning(f"缩略图预生成失败 {image} w={w}: {e}")
+        finally:
+            _thumb_q.task_done()
+
+
+def _start_thumb_workers():
+    global _thumb_workers_started
+    with _thumb_workers_lock:
+        if _thumb_workers_started:
+            return
+        _thumb_workers_started = True
+        for _ in range(2):
+            threading.Thread(target=_thumb_worker, daemon=True,
+                             name="thumb-worker").start()
+
+
+def _prewarm_thumbs(results):
+    _start_thumb_workers()
+    for r in results or []:
+        if not isinstance(r, dict) or r.get("status") != "ok":
+            continue
+        image = r.get("image")
+        if not image:
+            continue
+        for w in (160, 480, 1024):
+            try:
+                _thumb_q.put_nowait((image, w))
+            except queue.Full:
+                logger.warning("缩略图预生成队列已满，跳过剩余任务")
+                return
+
+
+def _prewarm_history_thumbs(limit=200):
+    try:
+        conn = db(readonly=True)
+        rows = conn.execute("SELECT results FROM jobs ORDER BY created DESC LIMIT ?",
+                            (limit,)).fetchall()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"读取历史缩略图回填失败: {e}")
+        return
+    for (raw,) in rows:
+        try:
+            results = json.loads(raw or "[]")
+        except Exception:
+            continue
+        _prewarm_thumbs(results)
 
 
 def http_post(url, payload, timeout=1800):
@@ -313,6 +524,363 @@ def _pid_on_port(port):
         return int(m.group(1)) if m else None
     except Exception:
         return None
+
+
+def _tts_url(path):
+    return f"http://127.0.0.1:{TTS_PORT}{path}"
+
+
+def _tts_json(path, timeout=5):
+    """GET TTS 服务 JSON；不可达返回 None。"""
+    try:
+        with urllib.request.urlopen(_tts_url(path), timeout=timeout) as r:
+            return json.loads(r.read())
+    except Exception:
+        return None
+
+
+def _tts_call(method, path, body=None, data=None, content_type=None, timeout=600):
+    """调用 TTS 服务，返回 (status, bytes, content_type)；不抛网络异常。"""
+    headers = {}
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    elif content_type:
+        headers["Content-Type"] = content_type
+    req = urllib.request.Request(_tts_url(path), data=data, headers=headers,
+                                 method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read(), r.headers.get("content-type", "")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read(), e.headers.get("content-type", "application/json")
+    except Exception as e:
+        return 503, json.dumps({"detail": f"TTS 服务不可用: {e}"}).encode(), "application/json"
+
+
+def _tts_detail(body):
+    try:
+        return json.loads(body).get("detail") or body.decode(errors="replace")[:200]
+    except Exception:
+        return body.decode(errors="replace")[:200]
+
+
+def _tts_start(timeout=300):
+    """启动 TTS 子进程并等待三个模型就绪。"""
+    with _tts_lock:
+        health = _tts_json("/health", timeout=2)
+        if health and health.get("state") == "ready":
+            _tts["state"] = "ready"
+            _tts["error"] = None
+            return True
+        if health and health.get("state") == "error":
+            _tts["state"] = "error"
+            _tts["error"] = health.get("error") or "TTS 加载失败"
+            _tts_stop(reset_error=False)
+            return False
+        proc = _tts.get("proc")
+        if not proc or proc.poll() is not None:
+            if not os.path.exists(TTS_PY):
+                _tts["state"] = "error"
+                _tts["error"] = f"TTS Python 不存在: {TTS_PY}"
+                return False
+            for path in TTS_MODELS.values():
+                if not os.path.isdir(path):
+                    _tts["state"] = "error"
+                    _tts["error"] = f"模型目录不存在: {path}"
+                    return False
+            env = os.environ.copy()
+            env.update({"CUDA_VISIBLE_DEVICES": "0,1", "PYTHONPATH": BASE_DIR,
+                        "HF_HUB_OFFLINE": "1"})
+            cmd = [TTS_PY, "-m", "tts_service.app", "--host", "127.0.0.1",
+                   "--port", str(TTS_PORT),
+                   "--custom", TTS_MODELS["custom"],
+                   "--design", TTS_MODELS["design"],
+                   "--clone", TTS_MODELS["clone"],
+                   "--devices", "cuda:0,cuda:0,cuda:1"]
+            log_path = os.environ.get("IMAGEHUB_TTS_LOG", "/var/log/imagehub_tts.log")
+            try:
+                log = open(log_path, "ab")
+            except OSError:
+                log = open(os.path.join(RUN_DIR, "imagehub_tts.log"), "ab")
+            try:
+                proc = subprocess.Popen(cmd, cwd=BASE_DIR, env=env,
+                                        stdout=log, stderr=subprocess.STDOUT)
+            except Exception as e:  # noqa: BLE001
+                _tts["state"] = "error"
+                _tts["error"] = f"TTS 进程启动失败: {e}"
+                return False
+            finally:
+                log.close()
+            _tts["proc"] = proc
+        _tts["state"] = "loading"
+        _tts["error"] = None
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            health = _tts_json("/health", timeout=2)
+            if health and health.get("state") == "ready":
+                _tts["state"] = "ready"
+                return True
+            if health and health.get("state") == "error":
+                _tts["state"] = "error"
+                _tts["error"] = health.get("error") or "TTS 加载失败"
+                _tts_stop(reset_error=False)
+                return False
+            if proc.poll() is not None:
+                _tts["state"] = "error"
+                _tts["error"] = f"TTS 进程退出（code={proc.returncode}）"
+                return False
+            time.sleep(2)
+        _tts["state"] = "error"
+        _tts["error"] = "TTS 加载超时"
+        _tts_stop(reset_error=False)
+        return False
+
+
+def _tts_stop(timeout=60, reset_error=True):
+    """停止 TTS 子进程，并清理仍占用端口的残留进程。"""
+    with _tts_lock:
+        proc = _tts.get("proc")
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(10)
+                except subprocess.TimeoutExpired:
+                    pass
+        pid = _pid_on_port(TTS_PORT)
+        if pid:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except Exception:
+                pass
+            t0 = time.time()
+            while time.time() - t0 < timeout and _pid_on_port(TTS_PORT):
+                time.sleep(1)
+            pid = _pid_on_port(TTS_PORT)
+            if pid:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except Exception:
+                    pass
+        _tts["proc"] = None
+        _tts["state"] = "stopped"
+        if reset_error:
+            _tts["error"] = None
+
+
+def _tts_adopt():
+    """BFF 重启后接管仍在运行的 TTS 服务。"""
+    health = _tts_json("/health", timeout=2)
+    if health and health.get("ok"):
+        _tts["state"] = "ready"
+        _tts["error"] = None
+    elif health:
+        _tts["state"] = health.get("state", "error")
+        _tts["error"] = health.get("error")
+
+
+def _wav_duration_bytes(data):
+    try:
+        with wave.open(io.BytesIO(data), "rb") as w:
+            return round(w.getnframes() / float(w.getframerate()), 2)
+    except Exception:
+        return 0.0
+
+
+def _tts_save_result(variant, text, language, speaker, instruct, data, elapsed):
+    """把合成结果写入 TTS 专用语音库（不写 jobs、不进图库）。"""
+    name = f"tts_{uuid.uuid4().hex}.wav"
+    path = os.path.join(TTS_OUT_DIR, name)
+    os.makedirs(TTS_OUT_DIR, exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data)
+    jid = uuid.uuid4().hex
+    conn = db()
+    try:
+        conn.execute(
+            "INSERT INTO tts_audio(id,created,variant,text,language,speaker,instruct,"
+            "file,duration,elapsed,size,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (jid, time.time(), variant, text, language or "", speaker or "",
+             instruct or "", name, _wav_duration_bytes(data),
+             round(elapsed, 1), len(data), "ok"))
+        conn.commit()
+    finally:
+        conn.close()
+    return jid
+
+
+def _tts_history_audio(filename):
+    name = os.path.basename(filename or "")
+    if not name or name != filename:
+        return None
+    path = os.path.join(TTS_OUT_DIR, name)
+    return path if os.path.isfile(path) else None
+
+
+def _multipart_encode(fields, files):
+    """构造 multipart/form-data，避免给 BFF 增加新依赖。"""
+    boundary = "----imagehub" + uuid.uuid4().hex
+    out = []
+    for key, value in fields.items():
+        out.append((f"--{boundary}\r\nContent-Disposition: form-data; "
+                    f"name=\"{key}\"\r\n\r\n{value}\r\n").encode())
+    for key, (filename, data, ctype) in files.items():
+        out.append((f"--{boundary}\r\nContent-Disposition: form-data; "
+                    f"name=\"{key}\"; filename=\"{filename}\"\r\n"
+                    f"Content-Type: {ctype}\r\n\r\n").encode())
+        out.append(data + b"\r\n")
+    out.append(f"--{boundary}--\r\n".encode())
+    return b"".join(out), f"multipart/form-data; boundary={boundary}"
+
+
+# ==================== GPU 资源仲裁（图像 ↔ TTS 互斥） ====================
+def _arbiter_acquire(timeout: float = 600):
+    """FIFO 票号：所有后端切换按到达顺序串行，避免图像/TTS 同时抢显存。"""
+    ev = threading.Event()
+    with _arbiter_lock:
+        _arbiter_q.append(ev)
+        if _arbiter_q[0] is ev:
+            ev.set()
+    if ev.wait(timeout):
+        return True
+    with _arbiter_lock:
+        if ev in _arbiter_q:
+            was_head = _arbiter_q[0] is ev
+            _arbiter_q.remove(ev)
+            if was_head and _arbiter_q:
+                _arbiter_q[0].set()
+    return False
+
+
+def _arbiter_release():
+    with _arbiter_lock:
+        if _arbiter_q:
+            _arbiter_q.popleft()
+        if _arbiter_q:
+            _arbiter_q[0].set()
+
+
+def _image_busy():
+    """图像侧是否有正在运行或即将运行的请求（不含“已加载但空闲”）。"""
+    with _cond:
+        if (_state.get("active", 0) or _state.get("switching")
+                or _state.get("image_pending", 0)):
+            return True
+    with _lock:
+        running_job = any(j.get("status") == "running" for j in _jobs.values())
+    with _dq["lock"]:
+        dq = bool(_dq.get("running") or _dq.get("queue"))
+    return bool(running_job or dq or _comfy_lock.locked())
+
+
+def _wait_image_idle(timeout):
+    deadline = time.time() + timeout
+    while _image_busy():
+        left = deadline - time.time()
+        if left <= 0:
+            return False
+        with _cond:
+            _cond.wait(min(left, 2))
+    return True
+
+
+def _tts_begin_request(timeout=600):
+    """TTS 请求入口：确保 TTS 已加载；必要时等图像任务结束并停掉图像后端。
+
+    等图像空闲时**不持有仲裁票**，否则多模型对比的下一张图会拿不到票而死锁。
+    """
+    deadline = time.time() + timeout
+    while True:
+        left = deadline - time.time()
+        if left <= 0 or not _wait_image_idle(left):
+            _tts["state"] = "error"
+            _tts["error"] = "等待图像任务结束超时"
+            return False
+        left = deadline - time.time()
+        if left <= 0 or not _arbiter_acquire(left):
+            _tts["state"] = "error"
+            _tts["error"] = "等待 TTS 切换排队超时"
+            return False
+        try:
+            health = _tts_json("/health", timeout=2)
+            if health and health.get("state") == "ready":
+                with _cond:
+                    _tts["state"] = "ready"
+                    _tts["active"] += 1
+                return True
+            if _image_busy():
+                continue
+            for k in SERVICES:
+                try:
+                    stop_service(k)
+                except Exception:
+                    pass
+            try:
+                _stop_comfy()
+            except Exception:
+                pass
+            with _cond:
+                _state["loaded"] = None
+                _state["comfy_loaded"] = None
+            _save_state(None)
+            if not _tts_start(timeout=300):
+                return False
+            with _cond:
+                _tts["active"] += 1
+            return True
+        finally:
+            _arbiter_release()
+
+
+def _tts_end_request():
+    with _cond:
+        _tts["active"] = max(0, _tts["active"] - 1)
+        _cond.notify_all()
+
+
+def _tts_release_for_image(timeout=900):
+    """图像请求入口：等 TTS 生成结束，停掉整个 TTS 服务，再让图像加载。"""
+    if not _arbiter_acquire(timeout):
+        raise RuntimeError("等待图像任务排队超时")
+    try:
+        deadline = time.time() + timeout
+        while True:
+            with _cond:
+                active = _tts["active"]
+                state = _tts["state"]
+            if active > 0:
+                left = deadline - time.time()
+                if left <= 0:
+                    raise RuntimeError("等待 TTS 生成结束超时")
+                with _cond:
+                    _cond.wait(min(left, 2))
+                continue
+            if state != "stopped" or _tts_json("/health", timeout=2):
+                _tts_stop()
+            with _cond:
+                _state["image_pending"] = _state.get("image_pending", 0) + 1
+            return
+    finally:
+        _arbiter_release()
+
+
+def _image_done():
+    with _cond:
+        _state["image_pending"] = max(0, _state.get("image_pending", 0) - 1)
+        _cond.notify_all()
+
+
+@contextlib.contextmanager
+def _image_session():
+    _tts_release_for_image()
+    try:
+        yield
+    finally:
+        _image_done()
 
 
 def stop_service(svc_key):
@@ -703,12 +1271,77 @@ def wf_qwen_cn(control_name, control_type, strength, prompt, w, h, seed, mask_na
 
 
 # 工作流注册表：同一模型可按功能选用不同工作流
-WF_BUILDERS = {"h3": wf_h3, "qwen": wf_qwen, "zimage": wf_zimage, "moss": wf_moss}
+def wf_flux2klein(prompt, w, h, seed):
+    """FLUX.2 Klein 4B（ComfyUI，4 步蒸馏）。"""
+    return {
+        "70": {"class_type": "UNETLoader",
+               "inputs": {"unet_name": "flux-2-klein-4b-fp8.safetensors",
+                          "weight_dtype": "default"}},
+        "71": {"class_type": "CLIPLoader",
+               "inputs": {"clip_name": "qwen_3_4b.safetensors",
+                          "type": "flux2", "device": "default"}},
+        "72": {"class_type": "VAELoader",
+               "inputs": {"vae_name": "flux2-vae.safetensors"}},
+        "74": {"class_type": "CLIPTextEncode",
+               "inputs": {"clip": ["71", 0], "text": prompt}},
+        "76": {"class_type": "ConditioningZeroOut",
+               "inputs": {"conditioning": ["74", 0]}},
+        "63": {"class_type": "CFGGuider",
+               "inputs": {"model": ["70", 0], "positive": ["74", 0],
+                          "negative": ["76", 0], "cfg": 1.0}},
+        "66": {"class_type": "EmptyFlux2LatentImage",
+               "inputs": {"width": w, "height": h, "batch_size": 1}},
+        "62": {"class_type": "Flux2Scheduler",
+               "inputs": {"steps": 4, "width": w, "height": h}},
+        "61": {"class_type": "KSamplerSelect",
+               "inputs": {"sampler_name": "euler"}},
+        "73": {"class_type": "RandomNoise",
+               "inputs": {"noise_seed": seed}},
+        "64": {"class_type": "SamplerCustomAdvanced",
+               "inputs": {"noise": ["73", 0], "guider": ["63", 0],
+                          "sampler": ["61", 0], "sigmas": ["62", 0],
+                          "latent_image": ["66", 0]}},
+        "65": {"class_type": "VAEDecode",
+               "inputs": {"samples": ["64", 0], "vae": ["72", 0]}},
+        "9": {"class_type": "SaveImage",
+              "inputs": {"images": ["65", 0],
+                         "filename_prefix": "hub_flux2klein"}},
+    }
+
+
+def wf_nemotron(prompt, w, h, seed):
+    """Nemotron-Labs-Image-30B-A3B（ComfyUI 自定义节点）。"""
+    return {
+        "1": {"class_type": "NemotronImageLoader",
+              "inputs": {
+                  "model_name": "nemotron-image/"
+                                "nemotron_labs_image_30b_a3b_w4a8.safetensors",
+                  "experts": "auto", "engine": "auto"}},
+        "2": {"class_type": "NemotronImageGenerate",
+              "inputs": {"model": ["1", 0], "prompt": prompt,
+                         "width": w, "height": h, "seed": seed,
+                         "batch_size": 1, "temperature": 0.9,
+                         "top_p": 1.0, "top_k": 0}},
+        "3": {"class_type": "NemotronImageDecoderLoader",
+              "inputs": {"vae_name": "nemotron-image/"
+                                    "nemotron_labs_image_tokenizer_bf16.safetensors"}},
+        "4": {"class_type": "VAEDecode",
+              "inputs": {"samples": ["2", 0], "vae": ["3", 0]}},
+        "5": {"class_type": "SaveImage",
+              "inputs": {"images": ["4", 0],
+                         "filename_prefix": "hub_nemotron"}},
+    }
+
+
+WF_BUILDERS = {"h3": wf_h3, "qwen": wf_qwen, "zimage": wf_zimage, "moss": wf_moss,
+               "flux2klein": wf_flux2klein, "nemotron": wf_nemotron}
 MODEL_WORKFLOWS = {
     "qwen": {"t2i": wf_qwen, "controlnet": wf_qwen_cn},
     "h3": {"t2i": wf_h3},
     "zimage": {"t2i": wf_zimage},
     "moss": {"t2i": wf_moss},
+    "flux2klein": {"t2i": wf_flux2klein},
+    "nemotron": {"t2i": wf_nemotron},
 }
 
 
@@ -813,7 +1446,7 @@ def _run_comfy(model_key, prompt, w, h, seed):
                 "duration": dur, "size": f"{w}x{h}", "seed": seed}
 
 
-def run_model(model_key, prompt, width, height, seed, backend=None):
+def _run_model_impl(model_key, prompt, width, height, seed, backend=None):
     spec = MODELS[model_key]
     w, h = (width or spec["size"][0]), (height or spec["size"][1])
     cap = spec.get("max_size")
@@ -821,6 +1454,8 @@ def run_model(model_key, prompt, width, height, seed, backend=None):
         return {"model": model_key, "status": "error",
                 "error": f"{model_key} 最大支持 {cap}×{cap}（当前 {w}×{h}）", "duration": 0}
     backend = backend or _settings.get("backend", "comfy")
+    if spec.get("comfy_only"):
+        backend = "comfy"
     if backend == "comfy":
         try:
             logger.info(f"[comfy][{model_key}] prompt={prompt[:60]!r} size={w}x{h}")
@@ -859,6 +1494,11 @@ def run_model(model_key, prompt, width, height, seed, backend=None):
                 "error": str(e)[:300], "duration": 0}
     finally:
         release_model()
+
+
+def run_model(model_key, prompt, width, height, seed, backend=None):
+    with _image_session():
+        return _run_model_impl(model_key, prompt, width, height, seed, backend)
 
 
 def _admin_seed():
@@ -971,6 +1611,21 @@ def _upsert_user(u):
     return is_admin
 
 
+def _upsert_job_result(job_id, prompt, models, created, results, status):
+    conn = db()
+    try:
+        conn.execute(
+            "INSERT INTO jobs(id,prompt,models,created,results,status) "
+            "VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+            "results=excluded.results, status=excluded.status",
+            (job_id, prompt, json.dumps(models), created,
+             json.dumps(results), status),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def record_job(prompt, model_keys, results, status="done", project=None):
     """把单次生成写入历史（供 /v1 与 /api/edit 使用）"""
     jid = uuid.uuid4().hex[:12]
@@ -982,6 +1637,7 @@ def record_job(prompt, model_keys, results, status="done", project=None):
                       json.dumps(results), status, project))
         conn.commit()
         conn.close()
+        _prewarm_thumbs(results)
     except Exception as e:
         logger.warning(f"写入历史失败: {e}")
     return jid
@@ -989,6 +1645,7 @@ def record_job(prompt, model_keys, results, status="done", project=None):
 
 def run_job(job_id, prompt, model_keys, width, height, seed, backend=None):
     results = []
+    created = _jobs.get(job_id, {}).get("created", time.time())
     for mk in model_keys:
         try:
             results.append(run_model(mk, prompt, width, height, seed, backend=backend))
@@ -997,24 +1654,13 @@ def run_job(job_id, prompt, model_keys, width, height, seed, backend=None):
         with _lock:
             _jobs[job_id]["results"] = list(results)
         try:
-            conn = db()
-            conn.execute("INSERT OR REPLACE INTO jobs(id,prompt,models,created,results,status) "
-                         "VALUES (?,?,?,?,?,?)",
-                         (job_id, prompt, json.dumps(model_keys), time.time(),
-                          json.dumps(results), "running"))
-            conn.commit()
-            conn.close()
+            _upsert_job_result(job_id, prompt, model_keys, created, results, "running")
         except Exception:
             pass
     with _lock:
         _jobs[job_id]["status"] = "done"
-        conn = db()
-        conn.execute("INSERT OR REPLACE INTO jobs(id,prompt,models,created,results,status) "
-                     "VALUES (?,?,?,?,?,?)",
-                     (job_id, prompt, json.dumps(model_keys), time.time(),
-                      json.dumps(results), "done"))
-        conn.commit()
-        conn.close()
+    _upsert_job_result(job_id, prompt, model_keys, created, results, "done")
+    _prewarm_thumbs(results)
 
 
 
@@ -1071,6 +1717,11 @@ MODEL_ALIASES = {
     "qwen-image-2.1-turbo": "qwen",
     "zimage": "zimage", "z-image": "zimage", "z-image-turbo": "zimage",
     "moss": "moss", "moss-image": "moss",
+    "flux2klein": "flux2klein", "flux-2-klein": "flux2klein",
+    "flux2-klein": "flux2klein", "flux-klein": "flux2klein",
+    "flux": "flux2klein", "flux2": "flux2klein",
+    "nemotron": "nemotron", "nemotron-image": "nemotron",
+    "nemotron-labs-image": "nemotron", "nemotron-30b": "nemotron",
 }
 
 
@@ -1181,8 +1832,7 @@ class EditReq(BaseModel):
     steps: int = 20
 
 
-@app.post("/api/edit")
-def api_edit(req: EditReq):
+def _api_edit_impl(req: EditReq):
     if not all(os.path.exists(p) for p in EDIT_NEEDS):
         raise HTTPException(503, {"error": "编辑模型权重尚未就绪",
                                   "hint": "需要 diffusers 组件 + GGUF DiT"})
@@ -1244,6 +1894,12 @@ def api_edit(req: EditReq):
         release_model()
 
 
+@app.post("/api/edit")
+def api_edit(req: EditReq):
+    with _image_session():
+        return _api_edit_impl(req)
+
+
 @app.get("/api/edit/model")
 def api_edit_model():
     return {"key": "edit", "label": EDIT_LABEL,
@@ -1303,7 +1959,7 @@ def api_compare(req: CompareReq):
 def api_job(job_id: str):
     j = _jobs.get(job_id)
     if not j:
-        conn = db()
+        conn = db(readonly=True)
         row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         conn.close()
         if not row:
@@ -1465,8 +2121,8 @@ def _save_b64(b64, prefix):
     return name
 
 
-def _design_generate(prompt, control_b64, control_type, strength, w, h, seed,
-                     mask_b64=None, model="qwen"):
+def _design_generate_impl(prompt, control_b64, control_type, strength, w, h, seed,
+                          mask_b64=None, model="qwen"):
     """ControlNet 结构化生成（ComfyUI），返回 (image, duration)"""
     if control_type not in ("canny", "lineart", "depth", "normal", "raw"):
         raise HTTPException(400, "control_type 仅支持 canny/lineart/depth/normal/raw")
@@ -1498,6 +2154,13 @@ def _design_generate(prompt, control_b64, control_type, strength, w, h, seed,
     if not ok:
         raise HTTPException(500, err)
     return (imgs[0] if imgs else None), dur
+
+
+def _design_generate(prompt, control_b64, control_type, strength, w, h, seed,
+                     mask_b64=None, model="qwen"):
+    with _image_session():
+        return _design_generate_impl(prompt, control_b64, control_type, strength,
+                                     w, h, seed, mask_b64, model)
 
 
 def _design_response(prompt, image, dur, w, h, seed, control_type, strength, workflow,
@@ -1643,7 +2306,7 @@ def api_design_presets(request: Request, apikey: Optional[str] = None):
         raise HTTPException(401, "需要 API Key")
     out = {k: list(v) for k, v in DESIGN_PRESETS.items()}
     try:
-        conn = db()
+        conn = db(readonly=True)
         for kind, value in conn.execute("SELECT kind,value FROM presets ORDER BY id").fetchall():
             if kind in out and value not in out[kind]:
                 out[kind].append(value)
@@ -1661,7 +2324,7 @@ class PresetReq(BaseModel):
 @app.get("/api/admin/presets")
 def admin_presets(request: Request):
     _require_admin(request)
-    conn = db()
+    conn = db(readonly=True)
     rows = conn.execute("SELECT id,kind,value FROM presets ORDER BY kind,id").fetchall()
     conn.close()
     return [{"id": r[0], "kind": r[1], "value": r[2]} for r in rows]
@@ -1811,6 +2474,7 @@ def _dq_worker():
             conn.commit()
             conn.close()
             logger.info(f"异步任务完成 {jid} -> {image}")
+            _prewarm_thumbs([{"status": "ok", "image": image}])
             if callback:
                 try:
                     http_post(callback, {"job_id": jid, "status": "done",
@@ -1947,6 +2611,9 @@ def _preload_default():
     """启动后自动加载默认模型（qwen）；等 3.6 就绪且空闲后再加载，避免并发分配显存"""
     if os.environ.get("IMAGEHUB_PRELOAD", "qwen").strip() in ("", "0", "off"):
         return
+    if _tts.get("state") in ("ready", "loading") or _tts_json("/health", timeout=2):
+        logger.info("TTS 已加载/加载中，跳过图像预加载")
+        return
     target = os.environ.get("IMAGEHUB_PRELOAD", "qwen").strip() or "qwen"
     time.sleep(10)
     try:
@@ -1964,8 +2631,9 @@ def _preload_default():
         if target not in MODELS:
             return
         if _settings.get("backend") == "direct":
-            acquire_model(target)
-            release_model()
+            with _image_session():
+                acquire_model(target)
+                release_model()
         else:
             # ComfyUI 后端：跑一次小尺寸预热
             ww, wh = MODELS[target].get("warm", (640, 640))
@@ -1973,6 +2641,12 @@ def _preload_default():
         logger.info(f"启动预加载完成: {target}")
     except Exception as e:
         logger.warning(f"启动预加载失败: {e}")
+
+
+@app.on_event("startup")
+def _on_startup_schema():
+    _ensure_schema()
+    threading.Thread(target=_prewarm_history_thumbs, daemon=True).start()
 
 
 @app.on_event("startup")
@@ -1985,9 +2659,21 @@ def _adopt_running_services():
                     _state["loaded"] = k
                 _save_state(k)
                 logger.info(f"接管已在运行的服务: {k}")
-                break
+                return
         except Exception:
             pass
+    # 没有服务在跑：清掉 state.json 里残留的“已驻留”，避免状态页谎报
+    with _cond:
+        _state["loaded"] = None
+    _save_state(None)
+
+
+@app.on_event("startup")
+def _adopt_tts_service():
+    try:
+        _tts_adopt()
+    except Exception:
+        pass
 
 
 @app.on_event("startup")
@@ -2008,7 +2694,7 @@ class KeyReq(BaseModel):
 @app.get("/api/admin/users")
 def admin_users(request: Request):
     _require_admin(request)
-    conn = db()
+    conn = db(readonly=True)
     rows = conn.execute("SELECT id,username,display_name,is_admin,source,synced_at "
                         "FROM users ORDER BY is_admin DESC, username").fetchall()
     conn.close()
@@ -2063,7 +2749,7 @@ def admin_set_user(uid: str, req: UserAdminReq, request: Request):
 @app.get("/api/admin/keys")
 def admin_keys(request: Request):
     _require_admin(request)
-    conn = db()
+    conn = db(readonly=True)
     rows = conn.execute("SELECT id,name,role,enabled,created,last_used,key_plain "
                         "FROM api_keys ORDER BY id DESC").fetchall()
     conn.close()
@@ -2103,7 +2789,7 @@ def admin_delete_key(kid: int, request: Request):
 @app.get("/api/admin/audit")
 def admin_audit(request: Request, limit: int = 100):
     _require_admin(request)
-    conn = db()
+    conn = db(readonly=True)
     rows = conn.execute("SELECT id,actor,action,detail,created FROM audit "
                         "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
     conn.close()
@@ -2118,7 +2804,7 @@ class ProjectReq(BaseModel):
 
 @app.get("/api/projects")
 def api_projects():
-    conn = db()
+    conn = db(readonly=True)
     rows = conn.execute("SELECT id,name,owner,created FROM projects ORDER BY created DESC").fetchall()
     conn.close()
     return [{"id": r[0], "name": r[1], "owner": r[2], "created": r[3]} for r in rows]
@@ -2139,7 +2825,7 @@ def api_create_project(req: ProjectReq):
 
 @app.get("/api/projects/{pid}/assets")
 def api_project_assets(pid: str):
-    conn = db()
+    conn = db(readonly=True)
     rows = conn.execute("SELECT id,prompt,results,created FROM jobs WHERE project=? ORDER BY created DESC LIMIT 100",
                         (pid,)).fetchall()
     conn.close()
@@ -2154,9 +2840,370 @@ def api_project_assets(pid: str):
     return out
 
 
+# ==================== TTS 路由 ====================
+def _tts_authed(apikey, request):
+    return _api_authed(apikey, request) or bool(_api_key_user(request))
+
+
+class TTSSpeakReq(BaseModel):
+    variant: str = "custom"
+    text: str = ""
+    language: str = "Auto"
+    speaker: Optional[str] = None
+    instruct: Optional[str] = None
+    apikey: Optional[str] = None
+
+
+class TTSSpeechReq(BaseModel):
+    input: str = ""
+    voice: str = "Vivian"
+    language: str = "Auto"
+    response_format: str = "wav"
+    apikey: Optional[str] = None
+
+
+@app.get("/api/tts/status")
+def api_tts_status():
+    remote = _tts_json("/api/status")
+    with _cond:
+        loaded = _state.get("loaded") or _state.get("comfy_loaded")
+    r = remote or {}
+    state = r.get("state") or _tts["state"]
+    if _tts["state"] in ("loading", "error"):
+        state = _tts["state"]
+    if remote and state == "ready":
+        # TTS 服务自己知道真实的生成/排队数；BFF 的 active 只是“已受理”
+        active = int(r.get("active", 0) or 0)
+        pending = int(r.get("pending", 0) or 0)
+    else:
+        active = int(_tts.get("active", 0) or 0)
+        pending = int(_tts.get("pending", 0) or 0)
+    return {"loaded": bool(remote) and state == "ready", "state": state,
+            "active": active, "pending": pending,
+            "models": r.get("models", {}),
+            "error": r.get("error") or _tts.get("error"),
+            "image": {"loaded": loaded, "busy": _image_busy()}}
+
+
+@app.post("/api/tts/load")
+def api_tts_load(request: Request, apikey: Optional[str] = None):
+    if not _tts_authed(apikey, request):
+        raise HTTPException(401, "需要登录或 API Key")
+    ok = _tts_begin_request(timeout=600)
+    if ok:
+        _tts_end_request()
+    if not ok:
+        raise HTTPException(503, _tts.get("error") or "TTS 启动失败")
+    return {"ok": True, "state": _tts["state"]}
+
+
+@app.post("/api/tts/unload")
+def api_tts_unload(request: Request, apikey: Optional[str] = None):
+    if not _tts_authed(apikey, request):
+        raise HTTPException(401, "需要登录或 API Key")
+    _tts_stop()
+    return {"ok": True, "state": _tts["state"]}
+
+
+@app.get("/api/tts/voices")
+def api_tts_voices():
+    code, body, _ = _tts_call("GET", "/api/voices", timeout=10)
+    if code != 200:
+        raise HTTPException(code if code >= 400 else 503, _tts_detail(body))
+    return JSONResponse(json.loads(body))
+
+
+def _tts_audio_response(body):
+    return Response(content=body, media_type="audio/wav",
+                    headers={"Content-Disposition": 'attachment; filename="tts.wav"'})
+
+
+def _tts_generation(call):
+    """TTS 生成统一入口：pending 只统计“还在等待”的请求。"""
+    with _cond:
+        _tts["pending"] += 1
+    waiting = True
+    try:
+        if not _tts_begin_request(timeout=600):
+            raise HTTPException(503, _tts.get("error") or "TTS 资源繁忙，请稍后重试")
+        waiting = False
+        with _cond:
+            _tts["pending"] = max(0, _tts["pending"] - 1)
+        try:
+            return call()
+        finally:
+            _tts_end_request()
+    finally:
+        if waiting:
+            with _cond:
+                _tts["pending"] = max(0, _tts["pending"] - 1)
+
+
+def _validate_tts_speak(variant, text, language, speaker, instruct):
+    """BFF 侧先校验，避免非法请求触发停图像 + 加载 TTS 的 30~120s 切换。"""
+    if variant not in ("custom", "design"):
+        raise HTTPException(400, "variant 必须是 custom 或 design")
+    if not (text or "").strip():
+        raise HTTPException(400, "text 不能为空")
+    if len(text) > 2000:
+        raise HTTPException(400, "text 不能超过 2000 字")
+    if not (language or "").strip():
+        raise HTTPException(400, "language 不能为空")
+    if variant == "custom" and not (speaker or "").strip():
+        raise HTTPException(400, "custom 需要 speaker")
+    if variant == "design" and not (instruct or "").strip():
+        raise HTTPException(400, "design 需要 instruct")
+
+
+@app.post("/api/tts/speak")
+def api_tts_speak(req: TTSSpeakReq, request: Request):
+    if not _tts_authed(req.apikey, request):
+        raise HTTPException(401, "需要登录或 API Key")
+    _validate_tts_speak(req.variant, req.text, req.language, req.speaker, req.instruct)
+    payload = {"variant": req.variant, "text": req.text, "language": req.language,
+               "speaker": req.speaker, "instruct": req.instruct}
+    t0 = time.time()
+    code, body, _ = _tts_generation(
+        lambda: _tts_call("POST", "/api/tts/speak", body=payload, timeout=1800))
+    elapsed = time.time() - t0
+    if code != 200:
+        raise HTTPException(code if code >= 400 else 503, _tts_detail(body))
+    try:
+        _tts_save_result(req.variant, req.text, req.language, req.speaker or "",
+                         req.instruct or "", body, elapsed)
+    except Exception:
+        logger.warning("TTS 记录写入失败", exc_info=True)
+    return _tts_audio_response(body)
+
+
+@app.post("/api/tts/clone")
+def api_tts_clone(request: Request,
+                  text: str = Form(""), language: str = Form("Auto"),
+                  ref_text: str = Form(""), x_vector_only_mode: str = Form("false"),
+                  apikey: str = Form(""),
+                  ref_audio: UploadFile = File(...)):
+    if not _tts_authed(apikey, request):
+        raise HTTPException(401, "需要登录或 API Key")
+    if not (text or "").strip():
+        raise HTTPException(400, "text 不能为空")
+    if len(text) > 2000:
+        raise HTTPException(400, "text 不能超过 2000 字")
+    if not (language or "").strip():
+        raise HTTPException(400, "language 不能为空")
+    xv = (x_vector_only_mode or "").lower() in ("1", "true", "yes", "on")
+    if not xv and not (ref_text or "").strip():
+        raise HTTPException(400, "克隆需要 ref_text，或启用 x_vector_only_mode")
+    data = ref_audio.file.read(TTS_MAX_UPLOAD + 1)
+    if len(data) > TTS_MAX_UPLOAD:
+        raise HTTPException(400, f"参考音频超过 {TTS_MAX_UPLOAD // (1024 * 1024)}MB")
+    body, ctype = _multipart_encode(
+        {"text": text, "language": language, "ref_text": ref_text,
+         "x_vector_only_mode": x_vector_only_mode},
+        {"ref_audio": (ref_audio.filename or "ref.wav", data,
+                       ref_audio.content_type or "application/octet-stream")})
+    t0 = time.time()
+    code, resp, _ = _tts_generation(
+        lambda: _tts_call("POST", "/api/tts/clone", data=body,
+                          content_type=ctype, timeout=1800))
+    elapsed = time.time() - t0
+    if code != 200:
+        raise HTTPException(code if code >= 400 else 503, _tts_detail(resp))
+    try:
+        _tts_save_result("clone", text, language, "", ref_text or "", resp, elapsed)
+    except Exception:
+        logger.warning("TTS 记录写入失败", exc_info=True)
+    return _tts_audio_response(resp)
+
+
+@app.post("/v1/audio/speech")
+def v1_audio_speech(req: TTSSpeechReq, request: Request):
+    if not _tts_authed(req.apikey, request):
+        raise HTTPException(401, "需要 API Key（网页登录状态可直接调用）")
+    if req.response_format not in ("wav",):
+        raise HTTPException(400, "只支持 response_format=wav")
+    if not (req.input or "").strip():
+        raise HTTPException(400, "input 不能为空")
+    if len(req.input) > 2000:
+        raise HTTPException(400, "input 不能超过 2000 字")
+    payload = {"variant": "custom", "text": req.input,
+               "language": req.language, "speaker": req.voice, "instruct": None}
+    t0 = time.time()
+    code, body, _ = _tts_generation(
+        lambda: _tts_call("POST", "/api/tts/speak", body=payload, timeout=1800))
+    elapsed = time.time() - t0
+    if code != 200:
+        raise HTTPException(code if code >= 400 else 503, _tts_detail(body))
+    try:
+        _tts_save_result("custom", req.input, req.language, req.voice, "", body, elapsed)
+    except Exception:
+        logger.warning("TTS 记录写入失败", exc_info=True)
+    return _tts_audio_response(body)
+
+
+@app.get("/api/tts/history")
+def api_tts_history(request: Request, limit: int = 10, offset: int = 0,
+                    apikey: Optional[str] = None):
+    if not _tts_authed(apikey, request):
+        raise HTTPException(401, "需要登录或 API Key")
+    limit = max(1, min(int(limit), 50))
+    offset = max(0, int(offset))
+    conn = db(readonly=True)
+    try:
+        total = conn.execute("SELECT COUNT(*) FROM tts_audio").fetchone()[0]
+        rows = conn.execute(
+            "SELECT id,created,variant,text,language,speaker,instruct,file,"
+            "duration,elapsed,size FROM tts_audio ORDER BY created DESC "
+            "LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+    finally:
+        conn.close()
+    keys = ["id", "created", "variant", "text", "language", "speaker", "instruct",
+            "file", "duration", "elapsed", "size"]
+    return {"rows": [dict(zip(keys, r)) for r in rows], "total": total,
+            "limit": limit, "offset": offset}
+
+
+@app.get("/api/tts/audio/{filename}")
+def api_tts_audio(filename: str, request: Request,
+                  apikey: Optional[str] = None):
+    if not _tts_authed(apikey, request):
+        raise HTTPException(401, "需要登录或 API Key")
+    path = _tts_history_audio(filename)
+    if not path:
+        raise HTTPException(404, "音频不存在")
+    return FileResponse(path, media_type="audio/wav")
+
+
+@app.delete("/api/tts/history/{jid}")
+def api_tts_history_delete(jid: str, request: Request,
+                           apikey: Optional[str] = None):
+    if not _tts_authed(apikey, request):
+        raise HTTPException(401, "需要登录或 API Key")
+    conn = db()
+    try:
+        row = conn.execute("SELECT file FROM tts_audio WHERE id=?", (jid,)).fetchone()
+        if not row:
+            raise HTTPException(404, "记录不存在")
+        conn.execute("DELETE FROM tts_audio WHERE id=?", (jid,))
+        conn.commit()
+    finally:
+        conn.close()
+    path = _tts_history_audio(row[0])
+    if path:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return {"ok": True}
+
+
+class TTSDeleteReq(BaseModel):
+    ids: List[str] = []
+    apikey: Optional[str] = None
+
+
+@app.post("/api/tts/history/batch-delete")
+def api_tts_history_batch_delete(req: TTSDeleteReq, request: Request):
+    if not _tts_authed(req.apikey, request):
+        raise HTTPException(401, "需要登录或 API Key")
+    ids = list(dict.fromkeys(req.ids or []))[:200]
+    if not ids:
+        return {"ok": True, "deleted": 0}
+    conn = db()
+    try:
+        q = ",".join("?" * len(ids))
+        rows = conn.execute(f"SELECT file FROM tts_audio WHERE id IN ({q})",
+                            ids).fetchall()
+        conn.execute(f"DELETE FROM tts_audio WHERE id IN ({q})", ids)
+        conn.commit()
+    finally:
+        conn.close()
+    for row in rows:
+        path = _tts_history_audio(row[0])
+        if path:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    return {"ok": True, "deleted": len(rows)}
+
+
+@app.post("/api/tts/history/batch-download")
+def api_tts_history_batch_download(req: TTSDeleteReq, request: Request):
+    """把选中的语音打包成 zip；单条请直接用 /api/tts/audio/{file}。"""
+    if not _tts_authed(req.apikey, request):
+        raise HTTPException(401, "需要登录或 API Key")
+    ids = list(dict.fromkeys(req.ids or []))[:200]
+    if not ids:
+        raise HTTPException(400, "请选择要下载的记录")
+    conn = db(readonly=True)
+    try:
+        q = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"SELECT id,created,variant,file FROM tts_audio WHERE id IN ({q})",
+            ids).fetchall()
+    finally:
+        conn.close()
+    buf = io.BytesIO()
+    count = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for jid, created, variant, name in rows:
+            path = _tts_history_audio(name)
+            if not path:
+                continue
+            ts = time.strftime("%Y%m%d-%H%M%S", time.localtime(created or 0))
+            arc = f"{ts}_{variant or 'tts'}_{jid[:8]}.wav"
+            z.write(path, arcname=arc)
+            count += 1
+    if not count:
+        raise HTTPException(404, "没有可下载的音频")
+    fn = f"tts-audio-{time.strftime('%Y%m%d-%H%M%S')}.zip"
+    return Response(content=buf.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{fn}"'})
+
+
+@app.get("/api/docs")
+def api_docs():
+    """下载完整的 API 调用说明（Markdown）。"""
+    path = os.path.join(BASE_DIR, "docs", "ImageHub调用说明.md")
+    if not os.path.isfile(path):
+        raise HTTPException(404, "说明文档不存在")
+    return FileResponse(path, media_type="text/markdown; charset=utf-8",
+                        filename="ImageHub-API.md")
+
+
+@app.get("/api/tls/cert")
+def api_tls_cert():
+    """下载 HTTPS 公钥证书；私钥永远不对外。"""
+    path = os.environ.get("IMAGEHUB_TLS_CERT") or "/etc/imagehub/tls/imagehub.crt"
+    if not os.path.isfile(path):
+        raise HTTPException(404, "证书不存在")
+    return FileResponse(path, media_type="application/x-x509-ca-cert",
+                        filename="imagehub.crt")
+
+
 @app.get("/api/version")
 def api_version():
     return {"name": "ImageHub", "version": APP_VERSION, "build": APP_BUILD}
+
+
+def _busy():
+    with _cond:
+        active = _state.get("active", 0)
+        switching = _state.get("switching", False)
+        image_pending = _state.get("image_pending", 0)
+    with _lock:
+        running_job = any(j.get("status") == "running" for j in _jobs.values())
+    with _dq["lock"]:
+        dq_running = _dq.get("running")
+        dq_queued = bool(_dq.get("queue"))
+    tts_busy = (_tts.get("state") == "loading" or _tts.get("active", 0) > 0
+                or _tts.get("pending", 0) > 0)
+    with _arbiter_lock:
+        switch_waiting = bool(_arbiter_q)
+    return bool(
+        active or switching or image_pending or running_job or dq_running or dq_queued
+        or _comfy_lock.locked() or tts_busy or switch_waiting
+    )
 
 
 @app.get("/api/status")
@@ -2176,14 +3223,19 @@ def api_status():
             backend_now = backend
         return {"loaded": loaded, "active": _state["active"],
                 "switching": _state["switching"], "target": _state["target"],
-                "backend": backend_now, "version": APP_VERSION}
+                "backend": backend_now, "version": APP_VERSION,
+                "tls": _tls_enabled(),
+                "tts": {"state": _tts["state"], "active": _tts["active"],
+                        "pending": _tts["pending"],
+                        "error": _tts.get("error")},
+                "busy": _busy()}
 
 
 @app.get("/api/history")
 def api_history(response: Response, limit: int = 30, offset: int = 0):
     limit = max(1, min(int(limit), 200))
     offset = max(0, int(offset))
-    conn = db()
+    conn = db(readonly=True)
     total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
     rows = conn.execute("SELECT id,prompt,models,created,results,status FROM jobs "
                         "ORDER BY created DESC LIMIT ? OFFSET ?",
@@ -2228,7 +3280,8 @@ def api_clear_history():
                     removed += 1
                 except Exception:
                     pass
-    _jobs.clear()
+    with _lock:
+        _jobs.clear()
     logger.info(f"清空历史：{len(rows)} 条记录，{removed} 张图片")
     return {"ok": True, "deleted_jobs": len(rows), "deleted_images": removed}
 
@@ -2262,7 +3315,8 @@ def api_batch_delete(req: BatchDeleteReq):
                     removed += 1
                 except Exception:
                     pass
-        _jobs.pop(jid, None)
+        with _lock:
+            _jobs.pop(jid, None)
     conn.commit()
     conn.close()
     logger.info(f"批量删除：{deleted} 条记录，{removed} 张图片")
@@ -2294,38 +3348,21 @@ def api_delete_history(job_id: str):
                 removed += 1
             except Exception:
                 pass
-    _jobs.pop(job_id, None)
+    with _lock:
+        _jobs.pop(job_id, None)
     logger.info(f"删除记录 {job_id}，图片 {removed} 张")
     return {"ok": True, "deleted_images": removed}
-
-
-LEGACY_DIRS = ["/opt/ComfyUI/output"]
-THUMB_DIR = os.path.join(BASE_DIR, "thumbs")
-os.makedirs(THUMB_DIR, exist_ok=True)
 
 
 @app.get("/thumb/{filename}")
 def thumb(filename: str, w: int = 160):
     """缩略图：服务端缩放并缓存，避免浏览器解码几十 MB 原图"""
-    from PIL import Image as _Img
-    name = os.path.basename(filename)
-    w = max(64, min(int(w), 1024))
-    out = os.path.join(THUMB_DIR, f"{os.path.splitext(name)[0]}_{w}.jpg")
-    if not os.path.isfile(out):
-        src = None
-        for d in [OUTPUT_DIR] + LEGACY_DIRS:
-            cand = os.path.join(d, name)
-            if os.path.isfile(cand):
-                src = cand
-                break
-        if not src:
-            raise HTTPException(404, "not found")
-        try:
-            im = _Img.open(src).convert("RGB")
-            im.thumbnail((w, w * 8))
-            im.save(out, "JPEG", quality=82)
-        except Exception as e:
-            raise HTTPException(500, f"缩略图生成失败: {str(e)[:120]}")
+    try:
+        out = _ensure_thumb(filename, w)
+    except Exception as e:
+        raise HTTPException(500, f"缩略图生成失败: {str(e)[:120]}")
+    if not out:
+        raise HTTPException(404, "not found")
     return FileResponse(out, media_type="image/jpeg",
                         headers={"Cache-Control": "public, max-age=86400"})
 

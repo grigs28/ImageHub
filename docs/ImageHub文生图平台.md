@@ -1,7 +1,7 @@
 # ImageHub · 统一文生图对比平台
 
 > 上线日期：2026-11-20
-> 访问地址：**http://192.168.0.70:5569**
+> 访问地址：**https://192.168.0.70:5569**
 
 ## 一、功能
 
@@ -79,17 +79,17 @@ ImageHub 已升级为**常驻模型服务**，可直接被程序调用：
 
 ```bash
 # 提交对比
-curl -X POST http://192.168.0.70:5569/api/compare \
+curl -X POST https://192.168.0.70:5569/api/compare \
   -H 'Content-Type: application/json' \
   -d '{"prompt":"...","models":["h3","qwen","zimage","moss"],"seed":42}'
 # → {"job_id":"..."}
 
 # 查询进度
-curl http://192.168.0.70:5569/api/jobs/{job_id}
+curl https://192.168.0.70:5569/api/jobs/{job_id}
 
 # 模型列表 / 历史
-curl http://192.168.0.70:5569/api/models
-curl http://192.168.0.70:5569/api/history
+curl https://192.168.0.70:5569/api/models
+curl https://192.168.0.70:5569/api/history
 ```
 
 可选参数：`width`、`height`（不给用模型默认）、`seed`。

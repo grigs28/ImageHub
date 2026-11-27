@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 import netifaces
 import psycopg2
 
+from tlsutil import build_uvicorn_cmd
+
 MODEL_ID = "imagehub/multi-image-web"
 BASE_DIR = "/opt/vLLM/imagehub"
 SERVICE_PORT = 5569
@@ -80,8 +82,10 @@ def main():
         env = os.environ.copy()
         env["PYTHONPATH"] = BASE_DIR
         process = subprocess.Popen(
-            ["/opt/conda3/envs/imagegen/bin/python", "-m", "uvicorn",
-             "app:app", "--host", "0.0.0.0", "--port", str(SERVICE_PORT)],
+            build_uvicorn_cmd(
+                "/opt/conda3/envs/imagegen/bin/python", SERVICE_PORT,
+                os.environ.get("IMAGEHUB_TLS_CERT"),
+                os.environ.get("IMAGEHUB_TLS_KEY")),
             cwd=BASE_DIR, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
         for line in process.stdout:
